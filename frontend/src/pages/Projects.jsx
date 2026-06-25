@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Tilt from 'react-parallax-tilt';
@@ -6,7 +6,6 @@ import {
   Plus,
   FolderOpen,
   Globe,
-  Package,
   ShieldCheck,
   Unlock,
   ExternalLink,
@@ -22,7 +21,6 @@ import {
   X,
   Check,
   FolderPlus,
-  UploadCloud,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -31,7 +29,6 @@ import {
   createProject,
   updateProject,
   deleteProject,
-  uploadProject,
   startLogin,
   saveSession,
   cancelLogin,
@@ -39,7 +36,6 @@ import {
 
 const Projects = () => {
   const navigate = useNavigate();
-  const fileInputRef = useRef(null);
 
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -47,7 +43,6 @@ const Projects = () => {
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -55,15 +50,9 @@ const Projects = () => {
   const [totalProjects, setTotalProjects] = useState(0);
   const PROJECTS_PER_PAGE = 10;
 
-  const [sourceType, setSourceType] = useState('url');
-
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [description, setDescription] = useState('');
-  const [environment, setEnvironment] = useState('dev');
-
-  const [zipFile, setZipFile] = useState(null);
-  const [dragOver, setDragOver] = useState(false);
 
   // For "Open & Login" button feedback
   const [openingLoginFor, setOpeningLoginFor] = useState(null);
@@ -105,30 +94,19 @@ const Projects = () => {
 
   const isUrlValid = /^https?:\/\/.+\..+/.test(baseUrl);
   const isNameValid = name.trim().length >= 3;
-  const isZipValid = zipFile && zipFile.name.toLowerCase().endsWith('.zip');
-  const isZipSizeOk = !zipFile || zipFile.size <= 50 * 1024 * 1024;
 
   const canSubmit = () => {
     if (saving) return false;
     if (!isNameValid) return false;
-    if (sourceType === 'url') {
-      return isUrlValid;
-    } else {
-      if (editingId) return true;
-      return isZipValid && isZipSizeOk;
-    }
+    return isUrlValid;
   };
 
   const resetForm = () => {
     setName('');
     setBaseUrl('');
     setDescription('');
-    setEnvironment('dev');
-    setZipFile(null);
-    setSourceType('url');
     setEditingId(null);
     setError('');
-    setUploadProgress(0);
   };
 
   const openCreateModal = () => {
@@ -140,8 +118,6 @@ const Projects = () => {
     setName(p.name);
     setBaseUrl(p.base_url);
     setDescription(p.description || '');
-    setEnvironment(p.environment);
-    setSourceType(p.source_type || 'url');
     setEditingId(p.id);
     setError('');
     setShowModal(true);
@@ -153,27 +129,6 @@ const Projects = () => {
     resetForm();
   };
 
-  const handleFileSelect = (file) => {
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      setError('Only ZIP files are allowed');
-      return;
-    }
-    if (file.size > 50 * 1024 * 1024) {
-      setError('File too large (50MB limit)');
-      return;
-    }
-    setZipFile(file);
-    setError('');
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleFileSelect(file);
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!canSubmit()) return;
@@ -182,31 +137,16 @@ const Projects = () => {
 
     try {
       if (editingId) {
-        const payload = {
+        await updateProject(editingId, {
           name: name.trim(),
+          base_url: baseUrl.trim(),
           description: description.trim(),
-          environment,
-        };
-        if (sourceType === 'url') {
-          payload.base_url = baseUrl.trim();
-        }
-        await updateProject(editingId, payload);
-      } else if (sourceType === 'url') {
+        });
+      } else {
         await createProject({
           name: name.trim(),
           base_url: baseUrl.trim(),
           description: description.trim(),
-          environment,
-        });
-      } else {
-        const formData = new FormData();
-        formData.append('file', zipFile);
-        formData.append('name', name.trim());
-        formData.append('description', description.trim());
-        formData.append('environment', environment);
-
-        await uploadProject(formData, (percent) => {
-          setUploadProgress(percent);
         });
       }
       closeModal();
@@ -216,7 +156,6 @@ const Projects = () => {
       setError(_.response?.data?.error || 'Failed to save project');
     } finally {
       setSaving(false);
-      setUploadProgress(0);
     }
   };
 
@@ -274,12 +213,6 @@ const Projects = () => {
     }
   };
 
-  const envColor = (env) => {
-    if (env === 'prod') return 'bg-red-500/15 text-red-300 border border-red-500/20';
-    if (env === 'staging') return 'bg-amber-500/15 text-amber-300 border border-amber-500/20';
-    return 'bg-brand-teal/15 text-brand-teal border border-brand-teal/20';
-  };
-
   // Format the session captured_at date
   const formatSessionAge = (capturedAt) => {
     if (!capturedAt) return null;
@@ -303,11 +236,6 @@ const Projects = () => {
   const inputBase =
     'w-full rounded-xl bg-white/5 border px-4 py-2.5 text-slate-100 placeholder:text-slate-500 ' +
     'focus:outline-none focus:ring-2 transition';
-  const toggleClass = (active) =>
-    'flex-1 cursor-pointer px-4 py-2.5 border rounded-xl text-center text-sm transition ' +
-    (active
-      ? 'border-brand-indigo/60 bg-brand-indigo/15 text-white font-medium'
-      : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/5');
 
   return (
     <div className="relative flex min-h-screen text-slate-200">
@@ -324,7 +252,7 @@ const Projects = () => {
           <div>
             <h1 className="text-3xl font-display font-bold text-white">Test Projects</h1>
             <p className="text-slate-400 mt-1">
-              Test live websites or upload your project as a ZIP file
+              Test live websites — automated and manual QA
             </p>
           </div>
           <button
@@ -382,33 +310,21 @@ const Projects = () => {
                         <h3 className="text-lg font-display font-bold text-white truncate flex-1">
                           {p.name}
                         </h3>
-                        <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + envColor(p.environment)}>
-                          {p.environment.toUpperCase()}
-                        </span>
                       </div>
 
                       <div className="mb-3 flex flex-wrap gap-2">
-                        {p.source_type === 'upload' ? (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-indigo/15 text-brand-indigo">
-                            <Package className="w-3.5 h-3.5" /> Uploaded ZIP
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-sky/15 text-brand-sky">
+                          <Globe className="w-3.5 h-3.5" /> Live URL
+                        </span>
+
+                        {p.has_active_session ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-teal/15 text-brand-teal">
+                            <ShieldCheck className="w-3.5 h-3.5" /> Logged in
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-sky/15 text-brand-sky">
-                            <Globe className="w-3.5 h-3.5" /> Live URL
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-white/5 text-slate-400">
+                            <Unlock className="w-3.5 h-3.5" /> No session
                           </span>
-                        )}
-
-                        {/* Session status badge (URL projects only) */}
-                        {p.source_type !== 'upload' && (
-                          p.has_active_session ? (
-                            <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-teal/15 text-brand-teal">
-                              <ShieldCheck className="w-3.5 h-3.5" /> Logged in
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-white/5 text-slate-400">
-                              <Unlock className="w-3.5 h-3.5" /> No session
-                            </span>
-                          )
                         )}
                       </div>
 
@@ -427,41 +343,38 @@ const Projects = () => {
                       )}
 
                       {/* Session info text */}
-                      {p.source_type !== 'upload' && p.has_active_session && p.session_captured_at && (
+                      {p.has_active_session && p.session_captured_at && (
                         <div className="flex items-center gap-1.5 text-xs text-brand-teal mb-3">
                           <Lock className="w-3.5 h-3.5" /> Session captured {formatSessionAge(p.session_captured_at)}
                         </div>
                       )}
-                      {p.source_type !== 'upload' && !p.has_active_session && (
+                      {!p.has_active_session && (
                         <div className="flex items-center gap-1.5 text-xs text-slate-500 mb-3">
                           <Lightbulb className="w-3.5 h-3.5" /> If site requires login, click below before testing
                         </div>
                       )}
 
                       <div className="mt-auto">
-                        {/* Open & Login button (URL projects only) */}
-                        {p.source_type !== 'upload' && (
-                          <button
-                            onClick={() => handleOpenLogin(p)}
-                            disabled={openingLoginFor === p.id}
-                            className={
-                              'w-full flex items-center justify-center gap-2 text-sm py-2 rounded-xl font-medium transition mb-3 ' +
-                              (openingLoginFor === p.id
-                                ? 'bg-brand-indigo/20 text-brand-indigo cursor-wait'
-                                : p.has_active_session
-                                  ? 'bg-white/5 hover:bg-white/10 text-brand-sky border border-brand-indigo/30'
-                                  : 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal')
-                            }
-                          >
-                            {openingLoginFor === p.id ? (
-                              <><Loader2 className="w-4 h-4 animate-spin" /> Opening browser...</>
-                            ) : p.has_active_session ? (
-                              <><RefreshCw className="w-4 h-4" /> Re-login</>
-                            ) : (
-                              <><KeyRound className="w-4 h-4" /> Open & Login</>
-                            )}
-                          </button>
-                        )}
+                        <button
+                          onClick={() => handleOpenLogin(p)}
+                          disabled={openingLoginFor === p.id}
+                          className={
+                            'w-full flex items-center justify-center gap-2 text-sm py-2 rounded-xl font-medium transition mb-3 ' +
+                            (openingLoginFor === p.id
+                              ? 'bg-brand-indigo/20 text-brand-indigo cursor-wait'
+                              : p.has_active_session
+                                ? 'bg-white/5 hover:bg-white/10 text-brand-sky border border-brand-indigo/30'
+                                : 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal')
+                          }
+                        >
+                          {openingLoginFor === p.id ? (
+                            <><Loader2 className="w-4 h-4 animate-spin" /> Opening browser...</>
+                          ) : p.has_active_session ? (
+                            <><RefreshCw className="w-4 h-4" /> Re-login</>
+                          ) : (
+                            <><KeyRound className="w-4 h-4" /> Open & Login</>
+                          )}
+                        </button>
 
                         <div className="flex gap-2 pt-3 border-t border-white/10">
                           <button
@@ -566,34 +479,6 @@ const Projects = () => {
                 </div>
               )}
 
-              {!editingId && (
-                <div>
-                  <label className="block text-slate-300 text-sm font-medium mb-1.5">Project Source *</label>
-                  <div className="flex gap-3">
-                    <label className={toggleClass(sourceType === 'url')}>
-                      <input
-                        type="radio"
-                        value="url"
-                        checked={sourceType === 'url'}
-                        onChange={(e) => setSourceType(e.target.value)}
-                        className="hidden"
-                      />
-                      <span className="inline-flex items-center gap-1.5"><Globe className="w-4 h-4" /> Live Website</span>
-                    </label>
-                    <label className={toggleClass(sourceType === 'upload')}>
-                      <input
-                        type="radio"
-                        value="upload"
-                        checked={sourceType === 'upload'}
-                        onChange={(e) => setSourceType(e.target.value)}
-                        className="hidden"
-                      />
-                      <span className="inline-flex items-center gap-1.5"><Package className="w-4 h-4" /> Upload ZIP</span>
-                    </label>
-                  </div>
-                </div>
-              )}
-
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-1.5">Project Name *</label>
                 <input
@@ -614,89 +499,26 @@ const Projects = () => {
                 )}
               </div>
 
-              {sourceType === 'url' && (
-                <div>
-                  <label className="block text-slate-300 text-sm font-medium mb-1.5">Target Website URL *</label>
-                  <input
-                    type="text"
-                    value={baseUrl}
-                    onChange={(e) => setBaseUrl(e.target.value)}
-                    placeholder="https://example.com"
-                    className={`${inputBase} ${
-                      baseUrl && isUrlValid
-                        ? 'border-brand-teal/60 focus:ring-brand-teal/50'
-                        : baseUrl
-                        ? 'border-red-500/60 focus:ring-red-500/50'
-                        : 'border-white/10 focus:ring-brand-sky/60'
-                    }`}
-                  />
-                  <p className="text-xs text-slate-500 mt-1">Tests will run against this URL</p>
-                  {baseUrl && !isUrlValid && (
-                    <p className="text-red-400 text-xs mt-1">Must start with http:// or https://</p>
-                  )}
-                </div>
-              )}
-
-              {sourceType === 'upload' && !editingId && (
-                <div>
-                  <label className="block text-slate-300 text-sm font-medium mb-1.5">ZIP File *</label>
-                  <div
-                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                    onDragLeave={() => setDragOver(false)}
-                    onDrop={handleDrop}
-                    onClick={() => fileInputRef.current?.click()}
-                    className={
-                      'border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition ' +
-                      (dragOver
-                        ? 'border-brand-indigo bg-brand-indigo/10'
-                        : zipFile
-                        ? 'border-brand-teal/60 bg-brand-teal/10'
-                        : 'border-white/15 hover:border-white/30 bg-white/5')
-                    }
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".zip"
-                      onChange={(e) => handleFileSelect(e.target.files?.[0])}
-                      className="hidden"
-                    />
-                    {zipFile ? (
-                      <div>
-                        <Package className="w-9 h-9 mx-auto mb-2 text-brand-teal" />
-                        <p className="font-medium text-slate-100 break-all">{zipFile.name}</p>
-                        <p className="text-sm text-slate-400 mt-1">
-                          {(zipFile.size / (1024 * 1024)).toFixed(2)} MB
-                        </p>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setZipFile(null);
-                          }}
-                          className="text-sm text-red-400 hover:underline mt-2"
-                        >
-                          Remove file
-                        </button>
-                      </div>
-                    ) : (
-                      <div>
-                        <UploadCloud className="w-9 h-9 mx-auto mb-2 text-slate-400" />
-                        <p className="font-medium text-slate-200">Drop ZIP file here or click to browse</p>
-                        <p className="text-xs text-slate-500 mt-2">
-                          Max size: 50MB · Must contain an index.html file
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {sourceType === 'upload' && editingId && (
-                <div className="bg-brand-sky/10 border border-brand-sky/30 text-brand-sky px-4 py-3 rounded-xl text-sm">
-                  This is an uploaded project. To replace the files, delete this project and upload a new ZIP.
-                </div>
-              )}
+              <div>
+                <label className="block text-slate-300 text-sm font-medium mb-1.5">Target Website URL *</label>
+                <input
+                  type="text"
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder="https://example.com"
+                  className={`${inputBase} ${
+                    baseUrl && isUrlValid
+                      ? 'border-brand-teal/60 focus:ring-brand-teal/50'
+                      : baseUrl
+                      ? 'border-red-500/60 focus:ring-red-500/50'
+                      : 'border-white/10 focus:ring-brand-sky/60'
+                  }`}
+                />
+                <p className="text-xs text-slate-500 mt-1">Tests will run against this URL</p>
+                {baseUrl && !isUrlValid && (
+                  <p className="text-red-400 text-xs mt-1">Must start with http:// or https://</p>
+                )}
+              </div>
 
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-1.5">Description</label>
@@ -709,26 +531,9 @@ const Projects = () => {
                 />
               </div>
 
-              <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Environment</label>
-                <div className="flex gap-3">
-                  {['dev', 'staging', 'prod'].map((env) => (
-                    <label key={env} className={toggleClass(environment === env) + ' capitalize'}>
-                      <input
-                        type="radio"
-                        value={env}
-                        checked={environment === env}
-                        onChange={(e) => setEnvironment(e.target.value)}
-                        className="hidden"
-                      />
-                      {env}
-                    </label>
-                  ))}
-                </div>
-              </div>
 
               {/* Info banner about manual login */}
-              {sourceType === 'url' && !editingId && (
+              {!editingId && (
                 <div className="bg-brand-indigo/10 border border-brand-indigo/30 rounded-xl p-3 text-sm">
                   <p className="font-medium text-white flex items-center gap-2">
                     <Lightbulb className="w-4 h-4 text-brand-sky" /> About Login
@@ -739,21 +544,6 @@ const Projects = () => {
                     will open where you can log in manually (OTP, captcha, anything works).
                     Your session is saved for testing.
                   </p>
-                </div>
-              )}
-
-              {saving && sourceType === 'upload' && uploadProgress > 0 && (
-                <div>
-                  <div className="flex justify-between text-sm text-slate-400 mb-1">
-                    <span>Uploading...</span>
-                    <span>{uploadProgress}%</span>
-                  </div>
-                  <div className="w-full bg-white/10 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-brand-gradient h-2 rounded-full transition-all"
-                      style={{ width: uploadProgress + '%' }}
-                    ></div>
-                  </div>
                 </div>
               )}
 
@@ -778,13 +568,9 @@ const Projects = () => {
                 >
                   {saving && <Loader2 className="w-4 h-4 animate-spin" />}
                   {saving
-                    ? sourceType === 'upload' && !editingId
-                      ? 'Uploading...'
-                      : 'Saving...'
+                    ? 'Saving...'
                     : editingId
                     ? 'Update Project'
-                    : sourceType === 'upload'
-                    ? 'Upload & Create'
                     : 'Create Project'}
                 </button>
               </div>

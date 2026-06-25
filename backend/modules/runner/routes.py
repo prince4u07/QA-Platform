@@ -16,6 +16,7 @@ from PIL import Image
 from urllib.parse import urlparse, urljoin
 from datetime import datetime
 import os
+import re
 import json
 import time
 import uuid
@@ -286,6 +287,8 @@ def check_broken_links(page, base_url):
     # 302/401/403 and got wrongly flagged "broken". (cookies()/evaluate() run on
     # this crawl thread where `page` lives; the pool threads below only touch the
     # requests Session, never a Playwright object.)
+    base_host = (urlparse(base_url).netloc or '').lower()
+
     session = requests.Session()
     try:
         for c in page.context.cookies():
@@ -299,21 +302,40 @@ def check_broken_links(page, base_url):
                 continue
     except Exception:
         pass
+    ua = ''
     try:
-        ua = page.evaluate("navigator.userAgent")
+        ua = page.evaluate("navigator.userAgent") or ''
         if ua:
             session.headers['User-Agent'] = ua
     except Exception:
         pass
 
-    def _check(url):
+    # Cookie-less session for EXTERNAL links. The authenticated `session` above
+    # carries the logged-in user's cookies (incl. auth/JWT) — sending those to a
+    # third-party host while checking an outbound link would leak the session.
+    # External links are checked anonymously; only the User-Agent is shared.
+    ext_session = requests.Session()
+    if ua:
+        ext_session.headers['User-Agent'] = ua
+
+    def _same_site(url):
         try:
-            r = session.head(url, timeout=PER_REQUEST_TIMEOUT, allow_redirects=True)
+            h = (urlparse(url).netloc or '').lower()
+        except Exception:
+            return False
+        if not h or not base_host:
+            return False
+        return h == base_host or h.endswith('.' + base_host) or base_host.endswith('.' + h)
+
+    def _check(url):
+        sess = session if _same_site(url) else ext_session
+        try:
+            r = sess.head(url, timeout=PER_REQUEST_TIMEOUT, allow_redirects=True)
             # Many servers don't implement HEAD and answer 403/405/501 even when
             # the page is fine — confirm with a lightweight GET before judging.
             if r.status_code in (403, 405, 501):
-                r = session.get(url, timeout=PER_REQUEST_TIMEOUT,
-                                allow_redirects=True, stream=True)
+                r = sess.get(url, timeout=PER_REQUEST_TIMEOUT,
+                             allow_redirects=True, stream=True)
                 r.close()
             return r.status_code
         except requests.RequestException:
@@ -530,32 +552,62 @@ def check_security(page_url, response_headers, page=None, console_messages=None)
                     'display': f'Mixed content — {len(mixed)} insecure resource(s) on HTTPS page',
                 })
 
-        # Cookie flags. Session-bearing cookies without HttpOnly are readable by
-        # any injected script; non-Secure cookies on HTTPS leak over HTTP.
+        # Cookie flags. We only judge the SITE'S OWN login cookies. Third-party
+        # cookies (Google Analytics _ga/_gid, Razorpay, Facebook _fbp, etc.) are
+        # set by other companies' scripts — the site owner can't add HttpOnly/
+        # Secure to them, so flagging those was noise that confused users.
         if page is not None:
             try:
                 cookies = page.context.cookies()
             except Exception:
                 cookies = []
-            sessiony = ('sess', 'token', 'auth', 'jwt', 'sid', 'remember')
-            no_httponly = [c['name'] for c in cookies
-                           if not c.get('httpOnly')
-                           and any(k in (c.get('name') or '').lower() for k in sessiony)]
-            no_secure = [c['name'] for c in cookies
-                         if is_https and not c.get('secure')]
+            page_host = (urlparse(page_url).netloc or '').lower()
+
+            def _first_party(c):
+                dom = (c.get('domain') or '').lstrip('.').lower()
+                if not dom or not page_host:
+                    return False
+                return (page_host == dom
+                        or page_host.endswith('.' + dom)
+                        or dom.endswith('.' + page_host))
+
+            # Names/prefixes of common analytics & ad cookies to ignore outright.
+            ANALYTICS_PREFIXES = ('_ga', '_gid', '_gat', '_gcl', '_fbp', '_fbc',
+                                  '__utm', '_hj', '_clck', '_clsk', 'amplitude',
+                                  'mp_', 'ajs_', 'intercom', 'rzp')
+
+            def _is_third_party_noise(name):
+                n = (name or '').lower()
+                return n.startswith(ANALYTICS_PREFIXES)
+
+            sessiony = ('sess', 'token', 'auth', 'jwt', 'sid', 'remember', 'login')
+            own_cookies = [c for c in cookies
+                           if _first_party(c) and not _is_third_party_noise(c.get('name'))]
+
+            def _is_login_cookie(c):
+                return any(k in (c.get('name') or '').lower() for k in sessiony)
+
+            no_httponly = [c['name'] for c in own_cookies
+                           if _is_login_cookie(c) and not c.get('httpOnly')]
+            no_secure = [c['name'] for c in own_cookies
+                         if is_https and _is_login_cookie(c) and not c.get('secure')]
             if no_httponly:
                 names = ', '.join(sorted(set(no_httponly))[:5])
                 findings.append({
-                    'issue': f'Session cookie(s) missing HttpOnly flag: {names}',
+                    'issue': f'Login cookie is exposed to scripts: {names}',
                     'severity': 'major', 'header': 'cookies',
-                    'display': f'Session cookies readable by JavaScript (no HttpOnly): {names}',
+                    'display': (f'The login cookie "{names}" can be read by JavaScript on the '
+                                'page. If the site ever has a script-injection bug, an attacker '
+                                'could steal the login. Fix: mark the cookie "HttpOnly".'),
                 })
             if no_secure:
                 names = ', '.join(sorted(set(no_secure))[:5])
                 findings.append({
-                    'issue': f'Cookie(s) missing Secure flag on HTTPS site: {names}',
+                    'issue': f'Login cookie can travel unencrypted: {names}',
                     'severity': 'major', 'header': 'cookies',
-                    'display': f'Cookies sent without Secure flag: {names}',
+                    'display': (f'The login cookie "{names}" is missing the "Secure" flag, so the '
+                                'browser may send it over an unencrypted connection where it can '
+                                'be intercepted. Fix: mark the cookie "Secure".'),
                 })
 
         # CSP that exists but allows inline/eval script gives a false sense of safety.
@@ -584,10 +636,12 @@ def check_security(page_url, response_headers, page=None, console_messages=None)
         if missing:
             header_names = ', '.join(m['header'] for m in missing)
             findings.append({
-                'issue': f'Missing security headers ({len(missing)}): {header_names}',
+                'issue': f'{len(missing)} recommended security headers are missing',
                 'severity': 'minor', 'header': header_names,
                 'missing_headers': missing,
-                'display': f'Missing {len(missing)} security hygiene headers',
+                'display': (f'{len(missing)} recommended security headers are missing '
+                            f'({header_names}). These are optional server settings that help '
+                            'block common attacks like clickjacking and content sniffing.'),
             })
     except Exception as e:
         logger.warning("security check error: %s", e)
@@ -596,6 +650,39 @@ def check_security(page_url, response_headers, page=None, console_messages=None)
 
 # Bundled axe-core (the industry-standard WCAG engine). Injected into each page.
 AXE_PATH = os.path.join(os.path.dirname(__file__), 'axe.min.js')
+
+# axe-core's own wording is written for accessibility experts ("Elements must
+# meet minimum color contrast ratio thresholds"). Most users don't speak that.
+# Map the common rule ids to a plain-English sentence that says what's wrong and
+# why it matters. Unknown rules fall back to axe's help text.
+_A11Y_PLAIN = {
+    'color-contrast': "Some text is too light against its background and is hard to read",
+    'link-name': "Some links have no readable text, so people using a screen reader can't tell where they lead",
+    'button-name': "Some buttons have no label, so screen-reader users don't know what they do",
+    'image-alt': "Some images have no text description for screen-reader users",
+    'input-image-alt': "An image used as a button has no text description",
+    'label': "Some form fields have no label, so it's unclear what to type in them",
+    'form-field-multiple-labels': "A form field has conflicting labels",
+    'frame-title': "A frame on the page has no title describing what it contains",
+    'document-title': "The page has no title shown in the browser tab",
+    'html-has-lang': "The page doesn't say what language it's written in",
+    'html-lang-valid': "The page's declared language code is not valid",
+    'heading-order': "The headings skip levels, which makes the page structure confusing",
+    'empty-heading': "There is an empty heading with no text",
+    'list': "A list isn't built correctly, so screen readers may misread it",
+    'listitem': "A list item is not inside a proper list",
+    'duplicate-id': "The same element id is used more than once, which can confuse assistive tech",
+    'duplicate-id-active': "The same id is used on more than one interactive element",
+    'aria-required-attr': "An interactive element is missing accessibility attributes it needs",
+    'aria-roles': "An element uses an invalid accessibility role",
+    'aria-valid-attr-value': "An accessibility attribute has an invalid value",
+    'aria-hidden-focus': "A hidden element can still be focused with the keyboard",
+    'landmark-one-main': "The page has no main landmark, making it harder to navigate by screen reader",
+    'region': "Some content sits outside any landmark region",
+    'tabindex': "A positive tabindex is used, which makes keyboard navigation jump around unexpectedly",
+    'meta-viewport': "The page blocks zooming, which hurts users who need to enlarge text",
+    'select-name': "A dropdown has no label",
+}
 
 
 def check_accessibility_axe(page):
@@ -644,20 +731,25 @@ def check_accessibility_axe(page):
                 bbox = None
 
         impact = v.get('impact') or 'minor'
-        help_text = v.get('help') or v.get('id', 'Accessibility issue')
+        rule = v.get('id')
+        help_text = v.get('help') or rule or 'Accessibility issue'
+        # Plain-English summary for users; fall back to axe's expert wording.
+        plain = _A11Y_PLAIN.get(rule, help_text)
         count = len(nodes)
+        where = f"{count} place{'s' if count != 1 else ''}"
         findings.append({
-            'issue': f"{help_text} ({impact})",
-            'rule': v.get('id'),
+            'issue': plain,
+            'rule': rule,
             'impact': impact,
             'severity': _impact_to_sev.get(impact, 'minor'),
             'description': v.get('description', ''),
+            'help_text': help_text,          # original axe wording, kept for reference
             'help_url': v.get('helpUrl', ''),
             'count': count,
             'element_selector': first_target or 'unknown',
             'element_text': (nodes[0].get('html', '')[:120] if nodes else ''),
             'bounding_box': bbox,
-            'display': f"{help_text} — {count} element(s) [{impact}]",
+            'display': f"{plain} (found in {where})",
         })
     return findings
 
@@ -770,7 +862,38 @@ def check_mobile(page):
     return findings
 
 
-def filter_console_errors(console_messages):
+# Third-party hosts whose console errors are almost always noise the site owner
+# can't act on — ad networks, analytics, tag managers, chat/heatmap widgets. A
+# 404 or load failure from any of these says nothing about the site's own pages,
+# so we drop them entirely rather than letting them dent the health score.
+THIRD_PARTY_NOISE_HOSTS = (
+    'google-analytics', 'googletagmanager', 'googlesyndication', 'doubleclick',
+    'google.com/ads', 'adservice', 'adsystem', 'gstatic.com/ads',
+    'facebook.net', 'connect.facebook', 'facebook.com/tr',
+    'hotjar', 'mixpanel', 'segment.io', 'segment.com', 'fullstory',
+    'clarity.ms', 'sentry.io', 'intercom', 'intercomcdn', 'zendesk', 'zdassets',
+    'hubspot', 'hs-scripts', 'newrelic', 'nr-data', 'cloudflareinsights',
+    'optimizely', 'taboola', 'outbrain', 'criteo', 'bing.com/bat',
+    'snap.licdn', 'analytics.tiktok', 'tiktok.com', 'amplitude', 'heapanalytics',
+)
+
+# Pull the first http(s) URL out of a console message so we can tell whose
+# resource actually failed.
+_URL_IN_TEXT = re.compile(r'https?://[^\s\'"<>)]+')
+
+
+def _console_host(text):
+    """Best-effort host of the first URL mentioned in a console message ('' if none)."""
+    m = _URL_IN_TEXT.search(text or '')
+    if not m:
+        return ''
+    try:
+        return (urlparse(m.group(0)).netloc or '').lower()
+    except Exception:
+        return ''
+
+
+def filter_console_errors(console_messages, base_url=None):
     """Group + classify console errors instead of dumping the raw stream.
 
     Old behaviour: every repeat of the same error became its own finding, and a
@@ -778,7 +901,9 @@ def filter_console_errors(console_messages):
     - identical messages are grouped with a count (30 repeats -> 1 finding x30)
     - severity reflects what the error means:
         uncaught JS exception / CORS failure -> major (something is broken)
-        failed resource load (404 img/script) -> minor (sloppy, rarely fatal)
+        failed first-party resource (404 own img/script) -> minor (sloppy)
+        failed third-party resource (someone else's CDN) -> info (not actionable)
+    - ad/analytics/tracker hosts are dropped outright (pure noise).
     'mixed content' stays skipped here because check_security now surfaces it.
     """
     skip_patterns = ['unrecognized feature', 'deprecated', 'devtools', 'extension', 'favicon',
@@ -787,6 +912,13 @@ def filter_console_errors(console_messages):
                          'rangeerror', 'is not a function', 'cannot read propert',
                          'is not defined', 'unhandled promise rejection')
     cors_markers = ('cors', 'access-control-allow', 'cross-origin')
+
+    base_host = ''
+    if base_url:
+        try:
+            base_host = (urlparse(base_url).netloc or '').lower()
+        except Exception:
+            base_host = ''
 
     grouped = {}        # normalized text -> finding
     order = []
@@ -798,12 +930,27 @@ def filter_console_errors(console_messages):
         if any(pattern in text_lower for pattern in skip_patterns):
             continue
 
+        host = _console_host(text)
+        # Drop ad/analytics/tracker noise no matter what it claims to be — the
+        # site owner can't fix someone else's pixel failing to load.
+        if any(n in host for n in THIRD_PARTY_NOISE_HOSTS) and host:
+            continue
+        if any(n in text_lower for n in THIRD_PARTY_NOISE_HOSTS):
+            continue
+
         if any(m in text_lower for m in exception_markers):
             severity, kind = 'major', 'JS exception'
         elif any(m in text_lower for m in cors_markers):
             severity, kind = 'major', 'CORS failure'
         elif 'failed to load resource' in text_lower:
-            severity, kind = 'minor', 'Failed resource'
+            # A broken resource on the site's OWN host is a real (minor) defect;
+            # one on a third-party host is noise we surface only as 'info' so it
+            # barely touches the score.
+            third_party = bool(host) and bool(base_host) and base_host not in host and host not in base_host
+            if third_party:
+                severity, kind = 'info', 'Failed resource (third-party)'
+            else:
+                severity, kind = 'minor', 'Failed resource'
         else:
             severity, kind = 'minor', 'Console error'
 
@@ -1002,7 +1149,7 @@ def test_single_page(page, page_url, response_headers, console_messages, is_mobi
     # session valid), where these would flag every normal desktop control as a
     # "too small tap target" — pure noise. Skip them off mobile.
     mobile_issues = check_mobile(page) if is_mobile else []
-    real_errors = filter_console_errors(console_messages)
+    real_errors = filter_console_errors(console_messages, base_url=page_url)
     console_errors_rich = [
         {**msg, 'element_selector': 'console', 'parent_context': ''}
         for msg in real_errors
@@ -1380,11 +1527,16 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 ss_data = _session_storage_dict(tc.get('project_id'))
                 if ss_data:
                     import json as _json
-                    payload = _json.dumps(ss_data)
+                    # Double-encode: inner dumps -> JSON text of the data; outer
+                    # dumps -> a properly-escaped JS string LITERAL of that text
+                    # (ensure_ascii escapes every non-ASCII char incl. U+2028/9).
+                    # The script then JSON.parse()s the literal, so captured site
+                    # data can never break out of the string and execute as code.
+                    payload = _json.dumps(_json.dumps(ss_data))
                     context.add_init_script(
-                        f"(() => {{ try {{ const d = {payload}; "
+                        "(() => { try { const d = JSON.parse(" + payload + "); "
                         "for (const k in d) sessionStorage.setItem(k, d[k]); "
-                        "} catch(e) {} }})();"
+                        "} catch(e) {} })();"
                     )
                     logger.info("injecting %d sessionStorage keys for project '%s'",
                                 len(ss_data), tc.get('project_name'))

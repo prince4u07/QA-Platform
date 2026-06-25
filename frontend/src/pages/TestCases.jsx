@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -10,7 +10,8 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
-import { getProjects } from '../api/projects';
+import { assetUrl } from '../config';
+import { getAllProjects } from '../api/projects';
 import {
   getTestCases,
   createTestCase,
@@ -19,7 +20,8 @@ import {
   deleteTestCase,
 } from '../api/testcases';
 import { runTestCaseAsync, getRunJob, cancelRunJob, getTestRuns, getCrawledPages,
-  startManualRun, getManualRunStatus, finishManualRun, cancelManualRun } from '../api/runner';
+  startManualRun, getManualRunStatus, finishManualRun, cancelManualRun,
+  autoCrawlManualRun } from '../api/runner';
 import { createBugsFromTestRun } from '../api/bugs';
 
 // ---- pure helpers (module scope) ----
@@ -235,9 +237,9 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
                       <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
                         <Camera className="w-3.5 h-3.5" /> Page Screenshot
                       </p>
-                      <a href={'http://127.0.0.1:5000' + page.screenshot} target="_blank" rel="noopener noreferrer">
+                      <a href={assetUrl(page.screenshot)} target="_blank" rel="noopener noreferrer">
                         <img
-                          src={'http://127.0.0.1:5000' + page.screenshot}
+                          src={assetUrl(page.screenshot)}
                           alt={'Screenshot of ' + page.url}
                           className="max-h-48 border border-white/10 rounded-lg hover:border-brand-sky/50 transition"
                         />
@@ -315,9 +317,7 @@ const TestCases = () => {
 
     const loadProjects = async () => {
       try {
-        const res = await getProjects();
-        // /projects is paginated -> { data: [...], pagination }. Support both shapes.
-        const list = Array.isArray(res.data) ? res.data : (res.data?.data || []);
+        const list = await getAllProjects();
         setProjects(list);
       } catch (err) {
         if (err.response?.status === 401) {
@@ -568,20 +568,38 @@ const TestCases = () => {
     }
   };
 
+  // Holds the pending poll timeout + an alive flag so the recursive poll loop
+  // can be stopped the moment the component unmounts. Without this the setTimeout
+  // chain keeps hitting the API and calling setState on an unmounted component
+  // (memory leak + React warning + a closed modal getting resurrected).
+  const pollTimerRef = useRef(null);
+  const pollAliveRef = useRef(true);
+
+  useEffect(() => {
+    pollAliveRef.current = true;
+    return () => {
+      pollAliveRef.current = false;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, []);
+
   // Poll a queued run until it finishes, updating live progress as it goes.
   const pollRunJob = (tcId, jobId) =>
     new Promise((resolve, reject) => {
       const tick = async () => {
+        if (!pollAliveRef.current) return;   // component gone — stop polling
         try {
           const res = await getRunJob(jobId);
+          if (!pollAliveRef.current) return;
           const job = res.data;
           if (job.progress) setRunProgress(tcId, job.progress);
           if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
             resolve(job);
           } else {
-            setTimeout(tick, 2000);
+            pollTimerRef.current = setTimeout(tick, 2000);
           }
         } catch (e) {
+          if (!pollAliveRef.current) return;
           // A 404 mid-poll means the in-memory job vanished — almost always the
           // backend restarted (a .py save triggers Flask's reloader) and killed
           // the crawl. Give a clear cause instead of a bare "Job not found".
@@ -612,6 +630,23 @@ const TestCases = () => {
     } catch (err) {
       setManualMessage(err.response?.data?.error || 'Failed to open browser.');
       setManualRunFor(null);
+    } finally {
+      setManualBusy(false);
+    }
+  };
+
+  // User has finished logging in and clicked "start crawl" — tell the worker to
+  // take over and BFS-walk the authenticated app. The crawl never starts on its
+  // own, so it can't run before the user is logged in.
+  const triggerAutoCrawl = async () => {
+    if (!manualRunFor) return;
+    setManualBusy(true);
+    setManualMessage('');
+    try {
+      await autoCrawlManualRun(manualRunFor.id);
+      setManualMessage('Crawl started — walking the pages now.');
+    } catch (err) {
+      setManualMessage(err.response?.data?.error || 'Could not start the crawl.');
     } finally {
       setManualBusy(false);
     }
@@ -1369,10 +1404,10 @@ const TestCases = () => {
 
             <div className="px-6 py-3 text-sm text-slate-300 bg-white/[0.02] border-b border-white/10">
               A browser window has opened at the project URL. Log in manually
-              (handle any OTP / CAPTCHA there). Once you reach a page that isn't
-              the login screen, the system will <strong className="text-white">
-              automatically take over</strong> and walk every reachable page for
-              you. Click <strong className="text-white">Mark Pass</strong> /
+              (handle any OTP / CAPTCHA there). When you have finished logging in
+              and are on a page inside the app, click <strong className="text-white">
+              I'm logged in — start crawl</strong> and the system will walk every
+              reachable page for you. Click <strong className="text-white">Mark Pass</strong> /
               <strong className="text-white"> Mark Fail</strong> when done.
             </div>
 
@@ -1381,15 +1416,19 @@ const TestCases = () => {
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-brand-indigo" />
                   <span className="text-sm text-brand-indigo font-medium">
-                    Auto-crawling… {manualSnap.pages_visited}/{manualSnap.max_pages}
+                    Crawling… {manualSnap.pages_visited}/{manualSnap.max_pages}
                   </span>
                 </>
               ) : manualSnap?.status === 'ready' ? (
                 <>
                   <span className="w-2 h-2 rounded-full bg-brand-teal animate-pulse" />
-                  <span className="text-sm text-slate-300">
-                    Watching browser — auto-crawl will start once you leave the login page.
+                  <span className="text-sm text-slate-300 flex-1">
+                    Finish logging in, then start the crawl when you're ready.
                   </span>
+                  <button onClick={triggerAutoCrawl} disabled={manualBusy}
+                    className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-brand-gradient text-white shadow-glow disabled:opacity-50">
+                    <Play className="w-4 h-4" /> I'm logged in — start crawl
+                  </button>
                 </>
               ) : manualSnap?.status === 'done' ? (
                 <span className="text-sm text-brand-teal">Crawl finished.</span>
@@ -1405,12 +1444,12 @@ const TestCases = () => {
                 </div>
               ) : (
                 manualSnap.pages.map((p, i) => (
-                  <a key={i} href={`http://127.0.0.1:5000${p.screenshot}`} target="_blank" rel="noreferrer"
+                  <a key={i} href={assetUrl(p.screenshot)} target="_blank" rel="noreferrer"
                     className="flex gap-3 items-center bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg p-2 transition">
                     <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded bg-brand-indigo/20 text-brand-indigo text-xs font-bold">
                       {i + 1}
                     </span>
-                    <img src={`http://127.0.0.1:5000${p.screenshot}`} alt=""
+                    <img src={assetUrl(p.screenshot)} alt=""
                       className="w-16 h-12 object-cover rounded border border-white/10" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-white truncate">{p.url}</div>

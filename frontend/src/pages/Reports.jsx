@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { API_BASE } from '../config';
 import {
   LineChart, Line,
   BarChart, Bar,
@@ -109,8 +110,7 @@ const Reports = () => {
   const handleExportPDF = async () => {
     setExportingPdf(true);
     try {
-      const baseUrl = 'http://127.0.0.1:5000/api';
-      const response = await fetch(`${baseUrl}/reports/export-pdf`, {
+      const response = await fetch(`${API_BASE}/reports/export-pdf`, {
         headers: {
           Authorization: 'Bearer ' + localStorage.getItem('token'),
         },

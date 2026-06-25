@@ -9,7 +9,8 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
-import { getProjects } from '../api/projects';
+import { assetUrl } from '../config';
+import { getAllProjects } from '../api/projects';
 import {
   getBugs,
   getBug,
@@ -114,9 +115,7 @@ const BugTracker = () => {
 
     const loadProjects = async () => {
       try {
-        const res = await getProjects();
-        // /projects is paginated -> { data: [...], pagination }. Support both shapes.
-        const list = Array.isArray(res.data) ? res.data : (res.data?.data || []);
+        const list = await getAllProjects();
         setProjects(list);
       } catch (error) {
         if (error.response?.status === 401) {
@@ -662,9 +661,9 @@ const BugTracker = () => {
                         <p className="text-xs font-semibold text-brand-sky mb-2">SCREENSHOT — CLICK TO ENLARGE</p>
                         <div
                           className="border border-brand-sky/40 rounded-lg overflow-hidden bg-white/5 inline-block cursor-pointer hover:border-brand-sky transition"
-                          onClick={() => setEnlargedEvidence('http://127.0.0.1:5000' + evidence.screenshot_crop)}
+                          onClick={() => setEnlargedEvidence(assetUrl(evidence.screenshot_crop))}
                         >
-                          <img src={'http://127.0.0.1:5000' + evidence.screenshot_crop} alt="Visual proof of the issue"
+                          <img src={assetUrl(evidence.screenshot_crop)} alt="Visual proof of the issue"
                             className="max-w-full max-h-64 object-contain"
                             onError={(e) => { e.target.parentElement.style.display = 'none'; }} />
                         </div>

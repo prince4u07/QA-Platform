@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 MANUAL_RUNS_DIR = os.path.join('static', 'uploads', 'manual_runs')
 MAX_DURATION_SECS = 1800            # auto-close window after 30 idle minutes
 SCREENSHOT_DEBOUNCE_SECS = 1.0      # collapse rapid same-page redirects
-AUTO_TRIGGER_STABLE_SECS = 5.0      # off-login URL must hold this long to auto-crawl
 
 
 def _looks_like_login(url):
@@ -152,16 +151,19 @@ class _ManualSession:
                 # Phase 1: manual navigation. Poll page.url for changes — works
                 # for both real navigations AND SPA route changes (which don't
                 # fire framenavigated). The polling also pumps the Playwright
-                # event loop so we notice if the user closes the window.
+                # event loop so we notice if the user closes the window. Every
+                # page the user visits is screenshotted.
                 #
-                # Auto-trigger: once the URL is OFF the login page and has stayed
-                # stable for AUTO_TRIGGER_STABLE_SECS, fire the autocrawl signal
-                # automatically — no button needed.
+                # The crawl does NOT start on a timer. It begins ONLY when the
+                # user explicitly clicks "I'm logged in — start crawl" (which the
+                # /autocrawl endpoint turns into _autocrawl_event). A timer was
+                # removed because the start URL often isn't recognisable as a login
+                # page, so it could begin crawling BEFORE the user logged in —
+                # testing the public site instead of the authenticated app.
                 #
-                # Exits on: Done/Cancel, autocrawl signal (manual or auto),
-                # browser closed, timeout.
+                # Exits on: Done/Cancel, autocrawl signal (the button), browser
+                # closed, timeout.
                 deadline = time.time() + MAX_DURATION_SECS
-                stable_since = time.time()
                 while (not self._action_event.is_set()
                        and not self._autocrawl_event.is_set()
                        and time.time() < deadline):
@@ -179,14 +181,6 @@ class _ManualSession:
                         time.sleep(0.5)
                         self._capture(page)
                         last_url = current_url
-                        stable_since = time.time()       # active navigation resets
-
-                    if (not _looks_like_login(current_url)
-                            and (time.time() - stable_since) >= AUTO_TRIGGER_STABLE_SECS):
-                        logger.info("manual-run %s: auto-trigger — '%s' stable for %.1fs",
-                                    self.run_id, current_url, AUTO_TRIGGER_STABLE_SECS)
-                        self._autocrawl_event.set()
-                        break
 
                 # Phase 2 (optional): user signalled "auto-crawl from here". BFS
                 # through internal links of the page they're currently on (already

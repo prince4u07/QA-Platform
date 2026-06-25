@@ -58,8 +58,11 @@ def check_email():
         
         return jsonify({'available': True, 'message': 'Email available'}), 200
     except Exception as e:
-        # Assume available if there's a database error (for testing)
-        return jsonify({'available': True, 'message': 'Email available'}), 200
+        # NEVER claim "available" on a DB error — that lets a duplicate slip past
+        # the uniqueness check and corrupts sign-up. Fail closed instead.
+        current_app.logger.exception("check_email failed: %s", e)
+        return jsonify({'available': False,
+                        'message': 'Could not verify email right now. Please try again.'}), 503
 
 
 # CHECK USERNAME
@@ -85,8 +88,10 @@ def check_username():
         
         return jsonify({'available': True, 'message': 'Username available'}), 200
     except Exception as e:
-        # Assume available if there's a database error (for testing)
-        return jsonify({'available': True, 'message': 'Username available'}), 200
+        # Fail closed: a DB error must not masquerade as "username available".
+        current_app.logger.exception("check_username failed: %s", e)
+        return jsonify({'available': False,
+                        'message': 'Could not verify username right now. Please try again.'}), 503
 
 
 # REGISTER

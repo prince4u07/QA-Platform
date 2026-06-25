@@ -71,3 +71,36 @@ def test_filter_console_errors_keeps_only_real_errors():
     out = filter_console_errors(msgs)
     assert len(out) == 1
     assert 'boom' in out[0]['text']
+
+
+def test_filter_console_errors_drops_tracker_noise():
+    # Ad/analytics/tracker failures are dropped outright — the site owner can't
+    # act on someone else's pixel failing to load.
+    msgs = [
+        {'type': 'error',
+         'text': 'Failed to load resource: https://www.google-analytics.com/g/collect 404'},
+        {'type': 'error',
+         'text': 'Failed to load resource: https://connect.facebook.net/en_US/fbevents.js'},
+        {'type': 'error', 'text': 'Uncaught TypeError: real bug'},
+    ]
+    out = filter_console_errors(msgs, base_url='https://example.com/page')
+    assert len(out) == 1
+    assert 'real bug' in out[0]['text']
+
+
+def test_filter_console_errors_third_party_resource_is_info():
+    # A non-tracker third-party CDN 404 is surfaced but only as 'info' so it
+    # barely touches the health score; a first-party 404 stays 'minor'.
+    msgs = [
+        {'type': 'error',
+         'text': 'Failed to load resource: https://cdn.somevendor.com/lib.js 404 (Not Found)'},
+        {'type': 'error',
+         'text': 'Failed to load resource: https://example.com/img/logo.png 404 (Not Found)'},
+    ]
+    out = filter_console_errors(msgs, base_url='https://example.com/page')
+    by_sev = {f['severity'] for f in out}
+    assert by_sev == {'info', 'minor'}
+    third = next(f for f in out if 'somevendor' in f['text'])
+    first = next(f for f in out if 'example.com' in f['text'])
+    assert third['severity'] == 'info'
+    assert first['severity'] == 'minor'

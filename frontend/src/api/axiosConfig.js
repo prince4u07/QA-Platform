@@ -1,8 +1,8 @@
 import axios from 'axios';
+import { API_BASE } from '../config';
 
-// Set default base URL for all API calls
-axios.defaults.baseURL = 'http://127.0.0.1:5000/api';
-console.log('✓ Axios baseURL configured:', axios.defaults.baseURL);
+// Set default base URL for all API calls (env-overridable via VITE_API_URL).
+axios.defaults.baseURL = API_BASE;
 
 // Global axios setup: intercepts all responses
 // If any API call returns 401 (token expired/invalid), 

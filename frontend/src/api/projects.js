@@ -9,8 +9,26 @@ const getAuthHeader = () => ({
 });
 
 // List all projects (with pagination)
-export const getProjects = (page = 1, perPage = 10) => 
+export const getProjects = (page = 1, perPage = 10) =>
   axios.get(`${API_URL}?page=${page}&per_page=${perPage}`, getAuthHeader());
+
+// Fetch EVERY project across all pages. Dropdowns/filters need the full list,
+// not just the first page (the API caps per_page at 100), otherwise a user with
+// more than 100 projects silently can't select the rest.
+export const getAllProjects = async () => {
+  const all = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const res = await getProjects(page, 100);
+    const body = res.data;
+    const list = Array.isArray(body) ? body : (body?.data || []);
+    all.push(...list);
+    totalPages = body?.pagination?.pages || 1;
+    page += 1;
+  } while (page <= totalPages);
+  return all;
+};
 
 // Get a single project
 export const getProject = (id) =>
@@ -27,22 +45,6 @@ export const updateProject = (id, data) =>
 // Delete project
 export const deleteProject = (id) =>
   axios.delete(`${API_URL}/${id}`, getAuthHeader());
-
-// Upload ZIP-based project
-export const uploadProject = (formData, onProgress) => {
-  return axios.post(`${API_URL}/upload`, formData, {
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('token')}`,
-      'Content-Type': 'multipart/form-data',
-    },
-    onUploadProgress: (progressEvent) => {
-      if (onProgress && progressEvent.total) {
-        const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-        onProgress(percent);
-      }
-    },
-  });
-};
 
 // Dashboard stats
 export const getDashboardStats = () =>

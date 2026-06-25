@@ -1,10 +1,8 @@
 import os
 import shutil
-import zipfile
 import logging
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from werkzeug.utils import secure_filename
 
 from . import session_capture
 
@@ -13,11 +11,8 @@ logger = logging.getLogger(__name__)
 projects_bp = Blueprint('projects', __name__)
 mysql = None
 
-MAX_ZIP_SIZE = 50 * 1024 * 1024  # 50MB
-ALLOWED_ENVS = {'dev', 'staging', 'prod'}
-UPLOAD_BASE = os.path.join('static', 'uploads', 'projects')
+UPLOAD_BASE = os.path.join('static', 'uploads', 'projects')  # legacy upload dirs, cleaned on delete
 SESSIONS_DIR = os.path.join('static', 'uploads', 'sessions')
-PUBLIC_HOST = 'http://localhost:5000'  # used to build base_url for uploaded ZIPs
 
 
 def init_projects(app_mysql):
@@ -38,7 +33,6 @@ def _row_to_dict(r):
         'name': r['name'],
         'description': r['description'],
         'base_url': r['base_url'],
-        'environment': r['environment'],
         'source_type': r['source_type'],
         'upload_path': r['upload_path'],
         'created_at': r['created_at'].isoformat() if r['created_at'] else None,
@@ -50,7 +44,7 @@ def _row_to_dict(r):
 def _get_owned(project_id, user_id):
     cur = mysql.connection.cursor()
     cur.execute(
-        """SELECT id, name, description, base_url, environment,
+        """SELECT id, name, description, base_url,
                   source_type, upload_path, created_at,
                   has_active_session, session_captured_at
            FROM projects
@@ -95,7 +89,7 @@ def list_projects():
     
     # Get paginated results
     cur.execute(
-        """SELECT id, name, description, base_url, environment,
+        """SELECT id, name, description, base_url,
                   source_type, upload_path, created_at,
                   has_active_session, session_captured_at
            FROM projects
@@ -128,21 +122,18 @@ def create_project():
     name = (data.get('name') or '').strip()
     base_url = (data.get('base_url') or '').strip()
     description = (data.get('description') or '').strip()
-    environment = (data.get('environment') or 'dev').strip().lower()
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
     if not (base_url.startswith('http://') or base_url.startswith('https://')):
         return jsonify({'error': 'Valid URL required (http:// or https://)'}), 400
-    if environment not in ALLOWED_ENVS:
-        return jsonify({'error': 'Invalid environment'}), 400
 
     cur = mysql.connection.cursor()
     cur.execute(
         """INSERT INTO projects
-           (user_id, name, description, base_url, environment, source_type, has_active_session)
-           VALUES (%s, %s, %s, %s, %s, 'url', FALSE)""",
-        (_uid(), name, description, base_url, environment)
+           (user_id, name, description, base_url, source_type, has_active_session)
+           VALUES (%s, %s, %s, %s, 'url', FALSE)""",
+        (_uid(), name, description, base_url)
     )
     project_id = cur.lastrowid
     mysql.connection.commit()
@@ -162,12 +153,9 @@ def update_project(project_id):
     data = request.get_json() or {}
     name = (data.get('name') or project['name']).strip()
     description = (data.get('description') or '').strip()
-    environment = (data.get('environment') or project['environment']).strip().lower()
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
-    if environment not in ALLOWED_ENVS:
-        return jsonify({'error': 'Invalid environment'}), 400
 
     new_base_url = project['base_url']
     url_changed = False
@@ -185,17 +173,17 @@ def update_project(project_id):
         _clear_session_file(project_id)
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s, environment=%s,
+               SET name=%s, description=%s, base_url=%s,
                    has_active_session=FALSE, session_captured_at=NULL
                WHERE id=%s""",
-            (name, description, new_base_url, environment, project_id)
+            (name, description, new_base_url, project_id)
         )
     else:
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s, environment=%s
+               SET name=%s, description=%s, base_url=%s
                WHERE id=%s""",
-            (name, description, new_base_url, environment, project_id)
+            (name, description, new_base_url, project_id)
         )
     mysql.connection.commit()
     cur.close()
@@ -255,104 +243,6 @@ def delete_project(project_id):
     _clear_session_file(project_id)
 
     return jsonify({'message': 'Project deleted'}), 200
-
-
-# ---------- UPLOAD (ZIP) ----------
-
-@projects_bp.route('/upload', methods=['POST'])
-@jwt_required()
-def upload_project():
-    user_id = _uid()
-
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-
-    file = request.files['file']
-    name = (request.form.get('name') or '').strip()
-    description = (request.form.get('description') or '').strip()
-    environment = (request.form.get('environment') or 'dev').strip().lower()
-
-    if len(name) < 3:
-        return jsonify({'error': 'Name must be at least 3 characters'}), 400
-    if environment not in ALLOWED_ENVS:
-        return jsonify({'error': 'Invalid environment'}), 400
-    if not file or not file.filename.lower().endswith('.zip'):
-        return jsonify({'error': 'Only ZIP files allowed'}), 400
-
-    # Size check
-    file.seek(0, os.SEEK_END)
-    size = file.tell()
-    file.seek(0)
-    if size > MAX_ZIP_SIZE:
-        return jsonify({'error': 'File too large (50MB max)'}), 400
-
-    # Insert row first to get an ID for the folder name
-    cur = mysql.connection.cursor()
-    cur.execute(
-        """INSERT INTO projects
-           (user_id, name, description, base_url, environment, source_type, has_active_session)
-           VALUES (%s, %s, %s, %s, %s, 'upload', FALSE)""",
-        (user_id, name, description, '', environment)
-    )
-    project_id = cur.lastrowid
-    mysql.connection.commit()
-
-    project_dir = os.path.join(UPLOAD_BASE, str(project_id))
-    extracted_dir = os.path.join(project_dir, 'extracted')
-    os.makedirs(extracted_dir, exist_ok=True)
-    zip_path = os.path.join(project_dir, secure_filename(file.filename))
-
-    try:
-        file.save(zip_path)
-
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            # Reject path traversal
-            for member in zf.namelist():
-                if member.startswith('/') or '..' in member.replace('\\', '/').split('/'):
-                    raise ValueError('ZIP contains unsafe paths')
-            zf.extractall(extracted_dir)
-
-        # Find index.html (root or one level deep)
-        index_dir = None
-        for root, _, files in os.walk(extracted_dir):
-            if 'index.html' in files:
-                index_dir = root
-                break
-
-        if index_dir is None:
-            raise ValueError('ZIP must contain an index.html file')
-
-        # Build paths
-        rel_to_static = os.path.relpath(index_dir, 'static').replace('\\', '/')
-        upload_path = '/static/' + rel_to_static
-        base_url_local = f'{PUBLIC_HOST}{upload_path}/index.html'
-
-        cur.execute(
-            "UPDATE projects SET upload_path=%s, base_url=%s WHERE id=%s",
-            (upload_path, base_url_local, project_id)
-        )
-        mysql.connection.commit()
-        cur.close()
-
-        return jsonify({
-            'id': project_id,
-            'upload_path': upload_path,
-            'base_url': base_url_local,
-            'message': 'Project uploaded'
-        }), 201
-
-    except (zipfile.BadZipFile, ValueError) as e:
-        cur.execute("DELETE FROM projects WHERE id=%s", (project_id,))
-        mysql.connection.commit()
-        cur.close()
-        shutil.rmtree(project_dir, ignore_errors=True)
-        return jsonify({'error': str(e) or 'Invalid ZIP file'}), 400
-    except Exception as e:
-        cur.execute("DELETE FROM projects WHERE id=%s", (project_id,))
-        mysql.connection.commit()
-        cur.close()
-        shutil.rmtree(project_dir, ignore_errors=True)
-        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
 
 # ---------- STATS ----------

@@ -1,11 +1,9 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_mysqldb import MySQL
 from config import Config
-import os
 import logging
-from flask import send_from_directory
 
 from logging_config import configure_logging
 from extensions import limiter
@@ -66,6 +64,18 @@ app.register_blueprint(reports_bp, url_prefix='/api/reports')
 app.register_blueprint(ai_bp, url_prefix='/api/ai')
 app.register_blueprint(otp_bp, url_prefix='/api/otp')
 
+@app.before_request
+def _require_database():
+    # If MySQL failed to initialise at boot, every data endpoint would otherwise
+    # crash with AttributeError on mysql.connection. Convert that into a clean
+    # 503 here. /api/auth/* is exempt: the auth module has its own DB-availability
+    # handling, and OPTIONS preflights must pass through for CORS.
+    if mysql is None and request.method != 'OPTIONS' \
+            and request.path.startswith('/api/') \
+            and not request.path.startswith('/api/auth/'):
+        return jsonify({'error': 'Database unavailable. Please try again later.'}), 503
+
+
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):
     # Log the full traceback server-side; never leak internals to the client.
@@ -89,12 +99,6 @@ def handle_rate_limit(error):
         'detail': str(error.description),
     }), 429
 
-# Serve uploaded project files for preview
-
-@app.route('/preview/<int:project_id>/<path:filename>')
-def serve_preview(project_id, filename):
-    upload_dir = os.path.join(app.root_path, 'static', 'uploads', 'projects', str(project_id), 'extracted')
-    return send_from_directory(upload_dir, filename)
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
