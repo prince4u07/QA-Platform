@@ -53,6 +53,7 @@ const Projects = () => {
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [description, setDescription] = useState('');
+  const [requiresLogin, setRequiresLogin] = useState(false);
 
   // For "Open & Login" button feedback
   const [openingLoginFor, setOpeningLoginFor] = useState(null);
@@ -105,6 +106,7 @@ const Projects = () => {
     setName('');
     setBaseUrl('');
     setDescription('');
+    setRequiresLogin(false);
     setEditingId(null);
     setError('');
   };
@@ -118,6 +120,7 @@ const Projects = () => {
     setName(p.name);
     setBaseUrl(p.base_url);
     setDescription(p.description || '');
+    setRequiresLogin(!!p.requires_login);
     setEditingId(p.id);
     setError('');
     setShowModal(true);
@@ -141,12 +144,14 @@ const Projects = () => {
           name: name.trim(),
           base_url: baseUrl.trim(),
           description: description.trim(),
+          requires_login: requiresLogin,
         });
       } else {
         await createProject({
           name: name.trim(),
           base_url: baseUrl.trim(),
           description: description.trim(),
+          requires_login: requiresLogin,
         });
       }
       closeModal();
@@ -519,6 +524,23 @@ const Projects = () => {
                   <p className="text-red-400 text-xs mt-1">Must start with http:// or https://</p>
                 )}
               </div>
+
+              <label className="flex items-start gap-3 cursor-pointer rounded-xl border border-white/10 bg-white/5 p-3">
+                <input
+                  type="checkbox"
+                  checked={requiresLogin}
+                  onChange={(e) => setRequiresLogin(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-brand-indigo"
+                />
+                <span className="text-sm text-slate-300">
+                  This site requires login to access its main content
+                  <span className="block text-xs text-slate-500 mt-0.5">
+                    If ticked, running a test without a saved login session will warn you
+                    first (so login-gated pages aren&apos;t skipped). Leave unchecked for
+                    public sites.
+                  </span>
+                </span>
+              </label>
 
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-1.5">Description</label>

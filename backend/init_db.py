@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS projects (
     upload_path VARCHAR(255),
     environment VARCHAR(20) DEFAULT 'dev',
     source_type VARCHAR(20) DEFAULT 'url',
+    requires_login BOOLEAN DEFAULT FALSE,
     has_active_session BOOLEAN DEFAULT FALSE,
     session_captured_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

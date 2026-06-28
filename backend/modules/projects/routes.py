@@ -34,6 +34,7 @@ def _row_to_dict(r):
         'description': r['description'],
         'base_url': r['base_url'],
         'source_type': r['source_type'],
+        'requires_login': bool(r['requires_login']) if r.get('requires_login') is not None else False,
         'upload_path': r['upload_path'],
         'created_at': r['created_at'].isoformat() if r['created_at'] else None,
         'has_active_session': bool(r['has_active_session']) if r['has_active_session'] is not None else False,
@@ -45,7 +46,7 @@ def _get_owned(project_id, user_id):
     cur = mysql.connection.cursor()
     cur.execute(
         """SELECT id, name, description, base_url,
-                  source_type, upload_path, created_at,
+                  source_type, requires_login, upload_path, created_at,
                   has_active_session, session_captured_at
            FROM projects
            WHERE id=%s AND user_id=%s""",
@@ -90,7 +91,7 @@ def list_projects():
     # Get paginated results
     cur.execute(
         """SELECT id, name, description, base_url,
-                  source_type, upload_path, created_at,
+                  source_type, requires_login, upload_path, created_at,
                   has_active_session, session_captured_at
            FROM projects
            WHERE user_id=%s
@@ -122,6 +123,7 @@ def create_project():
     name = (data.get('name') or '').strip()
     base_url = (data.get('base_url') or '').strip()
     description = (data.get('description') or '').strip()
+    requires_login = 1 if data.get('requires_login') else 0
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
@@ -131,9 +133,9 @@ def create_project():
     cur = mysql.connection.cursor()
     cur.execute(
         """INSERT INTO projects
-           (user_id, name, description, base_url, source_type, has_active_session)
-           VALUES (%s, %s, %s, %s, 'url', FALSE)""",
-        (_uid(), name, description, base_url)
+           (user_id, name, description, base_url, source_type, has_active_session, requires_login)
+           VALUES (%s, %s, %s, %s, 'url', FALSE, %s)""",
+        (_uid(), name, description, base_url, requires_login)
     )
     project_id = cur.lastrowid
     mysql.connection.commit()
@@ -153,6 +155,8 @@ def update_project(project_id):
     data = request.get_json() or {}
     name = (data.get('name') or project['name']).strip()
     description = (data.get('description') or '').strip()
+    rl_val = data.get('requires_login', project.get('requires_login'))
+    requires_login = 1 if rl_val else 0
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
@@ -173,17 +177,17 @@ def update_project(project_id):
         _clear_session_file(project_id)
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s,
+               SET name=%s, description=%s, base_url=%s, requires_login=%s,
                    has_active_session=FALSE, session_captured_at=NULL
                WHERE id=%s""",
-            (name, description, new_base_url, project_id)
+            (name, description, new_base_url, requires_login, project_id)
         )
     else:
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s
+               SET name=%s, description=%s, base_url=%s, requires_login=%s
                WHERE id=%s""",
-            (name, description, new_base_url, project_id)
+            (name, description, new_base_url, requires_login, project_id)
         )
     mysql.connection.commit()
     cur.close()

@@ -42,7 +42,7 @@ def user_owns_testcase(user_id, testcase_id):
     cursor.execute(
         """SELECT tc.id, tc.title, tc.test_type, tc.crawl_pages, tc.max_pages,
                   p.base_url, p.id AS project_id, p.name AS project_name,
-                  p.has_active_session
+                  p.has_active_session, p.requires_login
            FROM test_cases tc
            JOIN projects p ON tc.project_id = p.id
            WHERE tc.id = %s AND p.user_id = %s""",
@@ -189,6 +189,94 @@ def _session_storage_dict(project_id):
         return None
 
 
+_ROUTE_RE = re.compile(r'(?:https?://[^\s"\'<>]+|/[A-Za-z0-9][A-Za-z0-9/_\-]*)')
+_ROUTE_SKIP_EXT = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.css', '.js',
+                   '.ico', '.woff', '.woff2', '.ttf', '.map', '.json', '.pdf')
+_ROUTE_SKIP_KW = ('/logout', '/signout', '/sign-out', '/log-out',
+                  '/api/', '/static/', '/assets/')
+
+
+def _routes_from_captured_storage(project_id, base_url):
+    """Mine internal route paths the authenticated SPA stored in its captured
+    session/localStorage (e.g. a `set_menus` array of dashboard routes) and
+    return them as absolute same-origin URLs to seed the crawl.
+
+    Many SPAs render authenticated navigation as button/onClick router links, NOT
+    plain <a href>, so the normal link discovery never reaches the dashboard /
+    account / bank-details pages. Those routes are, however, present in the menu
+    payload the app keeps in storage — so we mine them directly. We only walk
+    JSON-structured values (menus), never raw token/JWT strings, to avoid turning
+    base64 gibberish into bogus URLs.
+    """
+    try:
+        parsed = urlparse(base_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        host = (parsed.netloc or '').lower()
+    except Exception:
+        return []
+    if not origin or not host:
+        return []
+
+    blobs = []
+    ss = _session_storage_dict(project_id)
+    if isinstance(ss, dict):
+        blobs.extend(str(v) for v in ss.values() if v is not None)
+    sp = _session_state_path(project_id)
+    if sp:
+        try:
+            with open(sp, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            for o in state.get('origins') or []:
+                for kv in o.get('localStorage') or []:
+                    if kv.get('value') is not None:
+                        blobs.append(str(kv['value']))
+        except Exception:
+            pass
+
+    def _walk(obj, out):
+        if isinstance(obj, str):
+            out.append(obj)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _walk(v, out)
+        elif isinstance(obj, list):
+            for v in obj:
+                _walk(v, out)
+
+    leaves = []
+    for blob in blobs:
+        try:
+            parsed_json = json.loads(blob)
+        except Exception:
+            parsed_json = None
+        if parsed_json is not None and not isinstance(parsed_json, (str, int, float, bool)):
+            _walk(parsed_json, leaves)          # structured menu data
+        elif blob.startswith('/') or blob.startswith('http'):
+            leaves.append(blob)                  # a bare path/url value
+        # else: raw token/JWT/etc. — ignore
+
+    found = set()
+    for leaf in leaves:
+        for m in _ROUTE_RE.findall(leaf):
+            cand = m.strip()
+            if cand.startswith('http'):
+                p = urlparse(cand)
+                if (p.netloc or '').lower() != host:
+                    continue
+                path = p.path
+            else:
+                path = cand
+            if not path or path == '/' or ' ' in path or len(path) > 120:
+                continue
+            low = path.lower()
+            if any(low.endswith(e) for e in _ROUTE_SKIP_EXT):
+                continue
+            if any(k in low for k in _ROUTE_SKIP_KW):
+                continue
+            found.add(f"{origin}{path}".split('#')[0].rstrip('/'))
+    return sorted(found)
+
+
 def _session_expiry_info(session_path):
     """
     Inspect captured cookies and return (valid_now, warning_message_or_None).
@@ -247,9 +335,15 @@ def check_broken_links(page, base_url):
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    PER_REQUEST_TIMEOUT = 3
+    PER_REQUEST_TIMEOUT = 8       # working-but-slow links were timing out at 3s
     LINK_CAP = 30
     POOL_SIZE = 8
+    # Browser-like headers cut down on bot-protection refusing our plain HTTP client.
+    BROWSERY_HEADERS = {
+        'Accept': ('text/html,application/xhtml+xml,application/xml;q=0.9,'
+                   'image/avif,image/webp,image/apng,*/*;q=0.8'),
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
 
     findings = []
     candidates = []     # (full_url, link_handle)
@@ -290,6 +384,7 @@ def check_broken_links(page, base_url):
     base_host = (urlparse(base_url).netloc or '').lower()
 
     session = requests.Session()
+    session.headers.update(BROWSERY_HEADERS)
     try:
         for c in page.context.cookies():
             try:
@@ -315,6 +410,7 @@ def check_broken_links(page, base_url):
     # third-party host while checking an outbound link would leak the session.
     # External links are checked anonymously; only the User-Agent is shared.
     ext_session = requests.Session()
+    ext_session.headers.update(BROWSERY_HEADERS)
     if ua:
         ext_session.headers['User-Agent'] = ua
 
@@ -331,15 +427,22 @@ def check_broken_links(page, base_url):
         sess = session if _same_site(url) else ext_session
         try:
             r = sess.head(url, timeout=PER_REQUEST_TIMEOUT, allow_redirects=True)
-            # Many servers don't implement HEAD and answer 403/405/501 even when
-            # the page is fine — confirm with a lightweight GET before judging.
-            if r.status_code in (403, 405, 501):
+            # Many servers mishandle HEAD (answer 4xx/5xx) even when GET is fine —
+            # confirm ANY HEAD failure with a lightweight GET before judging.
+            if r.status_code >= 400:
                 r = sess.get(url, timeout=PER_REQUEST_TIMEOUT,
                              allow_redirects=True, stream=True)
                 r.close()
             return r.status_code
         except requests.RequestException:
-            return 0
+            # HEAD blocked/refused — some hosts only allow GET; try that too.
+            try:
+                r = sess.get(url, timeout=PER_REQUEST_TIMEOUT,
+                             allow_redirects=True, stream=True)
+                r.close()
+                return r.status_code
+            except requests.RequestException:
+                return 0
 
     def _is_broken(status):
         # 401/403/429/503 are auth / anti-bot / rate-limit / transient responses,
@@ -366,6 +469,38 @@ def check_broken_links(page, base_url):
     except Exception as e:
         logger.warning("broken_links: pool error: %s", e)
         return findings
+
+    # FINAL VERIFICATION — the real test. A plain HTTP client (requests) gets
+    # blocked by bot protection, TLS quirks, or HEAD refusal on plenty of perfectly
+    # working links, returning 0/4xx → false "broken" reports. Before accusing a
+    # link, fetch it through the ACTUAL browser (same cookies/UA/TLS/redirects as a
+    # human clicking it). If the browser loads it without a 4xx/5xx, it is NOT broken
+    # — drop it. Runs on the crawl thread (page lives here), sequentially, only over
+    # the small flagged subset, so it's cheap. This is what kills the false positives.
+    if bad:
+        verified = 0
+        try:
+            req = page.context.request
+            for url in list(bad.keys()):
+                try:
+                    resp = req.get(url, timeout=PER_REQUEST_TIMEOUT * 1000)
+                    real = resp.status
+                    try:
+                        resp.dispose()
+                    except Exception:
+                        pass
+                    if not _is_broken(real):
+                        del bad[url]        # browser opened it fine → false positive
+                        verified += 1
+                    else:
+                        bad[url] = real     # trust the browser's status over requests'
+                except Exception:
+                    pass                    # browser also failed → keep it flagged
+        except Exception as e:
+            logger.warning("broken_links: browser verify error: %s", e)
+        if verified:
+            logger.info("broken_links: %d link(s) cleared after real-browser verification",
+                        verified)
 
     def _link_severity(status, url):
         """A dead link in our own navigation is a real defect (major); a dead
@@ -527,6 +662,11 @@ def check_security(page_url, response_headers, page=None, console_messages=None)
     """
     findings = []
     is_https = page_url.startswith('https://')
+    # response_headers is None when the caller didn't capture the HTTP response
+    # (e.g. a manual run where the user navigated by hand). In that case we must
+    # NOT report header-presence issues — we'd falsely flag every header as
+    # "missing". Protocol, cookie, and mixed-content checks still run.
+    headers_known = response_headers is not None
     try:
         headers_lower = {k.lower(): v for k, v in (response_headers or {}).items()}
         csp = headers_lower.get('content-security-policy', '')
@@ -610,39 +750,42 @@ def check_security(page_url, response_headers, page=None, console_messages=None)
                                 'be intercepted. Fix: mark the cookie "Secure".'),
                 })
 
-        # CSP that exists but allows inline/eval script gives a false sense of safety.
-        csp_l = csp.lower()
-        if csp and ('unsafe-inline' in csp_l or 'unsafe-eval' in csp_l
-                    or "default-src *" in csp_l or "script-src *" in csp_l):
-            findings.append({
-                'issue': 'CSP present but weak (allows unsafe-inline/unsafe-eval or wildcard sources)',
-                'severity': 'minor', 'header': 'Content-Security-Policy',
-                'display': 'Content-Security-Policy present but weak',
-            })
+        # Header-presence checks only make sense when we actually captured the
+        # HTTP response. Skip them entirely when headers are unknown (manual run).
+        if headers_known:
+            # CSP that exists but allows inline/eval gives a false sense of safety.
+            csp_l = csp.lower()
+            if csp and ('unsafe-inline' in csp_l or 'unsafe-eval' in csp_l
+                        or "default-src *" in csp_l or "script-src *" in csp_l):
+                findings.append({
+                    'issue': 'CSP present but weak (allows unsafe-inline/unsafe-eval or wildcard sources)',
+                    'severity': 'minor', 'header': 'Content-Security-Policy',
+                    'display': 'Content-Security-Policy present but weak',
+                })
 
-        # Missing hygiene headers — grouped as ONE minor finding, not a -15 bomb.
-        hygiene = [
-            ('content-security-policy', 'Content-Security-Policy', 'Protects against XSS'),
-            ('x-content-type-options', 'X-Content-Type-Options', 'Stops MIME sniffing'),
-            ('referrer-policy', 'Referrer-Policy', 'Controls referrer leakage'),
-        ]
-        if is_https:
-            hygiene.append(('strict-transport-security', 'HSTS', 'Forces HTTPS'))
-        # X-Frame-Options is redundant when CSP declares frame-ancestors.
-        if 'frame-ancestors' not in csp_l:
-            hygiene.append(('x-frame-options', 'X-Frame-Options', 'Prevents clickjacking'))
-        missing = [{'header': name, 'purpose': purpose}
-                   for key, name, purpose in hygiene if key not in headers_lower]
-        if missing:
-            header_names = ', '.join(m['header'] for m in missing)
-            findings.append({
-                'issue': f'{len(missing)} recommended security headers are missing',
-                'severity': 'minor', 'header': header_names,
-                'missing_headers': missing,
-                'display': (f'{len(missing)} recommended security headers are missing '
-                            f'({header_names}). These are optional server settings that help '
-                            'block common attacks like clickjacking and content sniffing.'),
-            })
+            # Missing hygiene headers — grouped as ONE minor finding, not a -15 bomb.
+            hygiene = [
+                ('content-security-policy', 'Content-Security-Policy', 'Protects against XSS'),
+                ('x-content-type-options', 'X-Content-Type-Options', 'Stops MIME sniffing'),
+                ('referrer-policy', 'Referrer-Policy', 'Controls referrer leakage'),
+            ]
+            if is_https:
+                hygiene.append(('strict-transport-security', 'HSTS', 'Forces HTTPS'))
+            # X-Frame-Options is redundant when CSP declares frame-ancestors.
+            if 'frame-ancestors' not in csp_l:
+                hygiene.append(('x-frame-options', 'X-Frame-Options', 'Prevents clickjacking'))
+            missing = [{'header': name, 'purpose': purpose}
+                       for key, name, purpose in hygiene if key not in headers_lower]
+            if missing:
+                header_names = ', '.join(m['header'] for m in missing)
+                findings.append({
+                    'issue': f'{len(missing)} recommended security headers are missing',
+                    'severity': 'minor', 'header': header_names,
+                    'missing_headers': missing,
+                    'display': (f'{len(missing)} recommended security headers are missing '
+                                f'({header_names}). These are optional server settings that help '
+                                'block common attacks like clickjacking and content sniffing.'),
+                })
     except Exception as e:
         logger.warning("security check error: %s", e)
     return findings
@@ -1090,51 +1233,1110 @@ def discover_internal_links(page, base_url, max_pages):
     discovered = set()
     base_parsed = urlparse(base_url)
     base_domain = base_parsed.netloc
+    origin = f"{base_parsed.scheme}://{base_domain}"
 
+    # Gather candidate targets from real <a href> AND from SPA router-style nav
+    # (routerLink / data-href / etc.). Authenticated dashboards often render their
+    # menu as buttons/divs with a router attribute and NO plain href, so an
+    # a[href]-only scan misses every protected page. One evaluate() collects both.
     try:
-        links = page.query_selector_all('a[href]')
-        for link in links:
+        candidates = page.evaluate(
+            """(origin) => {
+                const out = new Set();
+                const push = (v) => { if (v) out.add(v); };
+                document.querySelectorAll('a[href]').forEach(a => push(a.href));
+                const attrs = ['routerlink', 'data-href', 'data-to', 'data-url',
+                               'data-link', 'ng-reflect-router-link'];
+                document.querySelectorAll(
+                    '[routerlink],[data-href],[data-to],[data-url],[data-link],[ng-reflect-router-link]'
+                ).forEach(el => {
+                    for (const at of attrs) {
+                        const v = el.getAttribute && el.getAttribute(at);
+                        if (v) { try { push(new URL(v, origin).href); } catch (e) {} }
+                    }
+                });
+                return Array.from(out);
+            }""",
+            origin,
+        ) or []
+    except Exception as e:
+        logger.warning("discover_internal_links evaluate error: %s", e)
+        candidates = []
+
+    for href in candidates:
+        try:
+            if not href:
+                continue
+            href = href.strip()
+            if href.startswith(('#', 'javascript:', 'mailto:', 'tel:', 'sms:')):
+                continue
+            if href.startswith('/'):
+                full_url = f"{origin}{href}"
+            elif href.startswith('http'):
+                full_url = href
+            else:
+                full_url = urljoin(base_url, href)
+
+            link_parsed = urlparse(full_url)
+            if link_parsed.netloc != base_domain:
+                continue
+
+            lower = full_url.lower()
+            if any(lower.endswith(ext) for ext in ['.pdf', '.zip', '.exe', '.dmg', '.tar', '.gz',
+                                                    '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp',
+                                                    '.mp4', '.mp3', '.avi', '.mov',
+                                                    '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']):
+                continue
+
+            if any(keyword in lower for keyword in ['/logout', '/signout', '/sign-out', '/log-out']):
+                continue
+
+            clean_url = full_url.split('#')[0].rstrip('/')
+            if clean_url:
+                discovered.add(clean_url)
+
+            if len(discovered) >= max_pages * 3:
+                break
+
+        except Exception:
+            continue
+
+    return list(discovered)
+
+
+# Clickable nav items across the common framework conventions (Bootstrap, Material,
+# Ant, Tailwind, Angular/React routers, generic sidebars). Kept GENERIC on purpose —
+# this tool tests any site, not one specific app.
+_CLICK_NAV_SEL = (
+    "nav a, nav button, aside a, aside button, header a, "
+    "[role=menuitem], [role=menu] a, [role=menu] button, [role=navigation] a, "
+    "[role=navigation] button, [role=tab], "
+    "[class*=menu] a, [class*=menu] button, "
+    "[class*=sidebar] a, [class*=sidebar] button, "
+    "[class*=side-bar] a, [class*=side-bar] button, "
+    "[class*=nav] a, [class*=nav] button, "
+    "[class*=drawer] a, [class*=drawer] button, "
+    "li[class*=menu-item] > a, li[class*=menu-item] > span"
+)
+
+# --- Generic collapsible-menu expander (runs IN the browser via page.evaluate) ---
+# One pass: detect every collapsible TRIGGER (hamburger, aria-expanded, data-toggle,
+# accordion header, dropdown trigger, has-submenu, etc.), click the ones not yet
+# handled, verify each actually opened (aria flip / container grew / new elements),
+# retry once with hover for stubborn JS menus, and return a per-trigger log. Triggers
+# are marked with a data attribute so repeated passes (and re-visits) don't re-click
+# them — that's the dedup that stops infinite toggle loops. Site-agnostic: only
+# standards (ARIA, data-*) and common framework class names, no hardcoded selectors.
+_EXPAND_ONE_PASS_JS = r"""
+() => {
+  const TRIGGER_SEL = [
+    '[aria-expanded="false"]',
+    '[aria-controls]',
+    '[aria-haspopup="true"]',
+    '[data-toggle]', '[data-bs-toggle]', '[data-target]', '[data-bs-target]',
+    'button[aria-expanded]', '[role="button"][aria-expanded]',
+    '[class*="menu-toggle"]', '[class*="nav-toggle"]', '[class*="navbar-toggle"]',
+    '[class*="hamburger"]', '[class*="sidebar-toggle"]', '[class*="drawer-toggle"]',
+    '[class*="dropdown-toggle"]', '[class*="dropdown-trigger"]', '[class*="menu-trigger"]',
+    '[class*="accordion"]', '[class*="collapsible"]', '[class*="expandable"]',
+    '[class*="has-submenu"]', '[class*="has-children"]', '[class*="has-sub"]',
+    '[class*="tree-toggle"]', '[class*="caret"]', '[class*="chevron"]'
+  ].join(',');
+  const HAMBURGER_TXT = /^(☰|⋮|⋯|≡|menu|more|\.\.\.)$/i;
+  const LOGOUT = /log\s*out|sign\s*out|logout/i;
+  const CLASS_KEYS = ['menu-toggle','nav-toggle','navbar-toggle','hamburger',
+    'sidebar-toggle','drawer-toggle','dropdown-toggle','dropdown-trigger','menu-trigger',
+    'accordion','collapsible','expandable','has-submenu','has-children','has-sub',
+    'tree-toggle','caret','chevron'];
+
+  const isVisible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const s = getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+  };
+  const whyCollapsible = (el) => {
+    const reasons = [];
+    if (el.getAttribute('aria-expanded') === 'false') reasons.push('aria-expanded=false');
+    if (el.hasAttribute('aria-controls')) reasons.push('aria-controls');
+    if (el.getAttribute('aria-haspopup') === 'true') reasons.push('aria-haspopup');
+    if (el.hasAttribute('data-toggle') || el.hasAttribute('data-bs-toggle')) reasons.push('data-toggle');
+    if (el.hasAttribute('data-target') || el.hasAttribute('data-bs-target')) reasons.push('data-target');
+    const c = (el.className || '').toString().toLowerCase();
+    for (const k of CLASS_KEYS) if (c.includes(k)) reasons.push('class~' + k);
+    if (HAMBURGER_TXT.test((el.innerText || '').trim())) reasons.push('hamburger-text');
+    return reasons;
+  };
+  const targetOf = (el) => {
+    let id = el.getAttribute('aria-controls')
+      || (el.getAttribute('data-target') || el.getAttribute('data-bs-target') || '').replace(/^#/, '');
+    if (id) { try { return document.getElementById(id); } catch (e) {} }
+    const sib = el.nextElementSibling;
+    if (sib && /^(ul|ol|div|nav|section|aside)$/i.test(sib.tagName)) return sib;
+    const p = el.closest('li, div, details');
+    if (p) {
+      const sub = p.querySelector('ul, ol, [class*="submenu"], [class*="sub-menu"], [class*="collapse"], [class*="dropdown-menu"]');
+      if (sub && sub !== el && !sub.contains(el)) return sub;
+    }
+    return null;
+  };
+  const snap = (t) => t
+    ? { vis: isVisible(t), h: t.scrollHeight || 0,
+        n: t.querySelectorAll('a,button,[role="menuitem"]').length }
+    : { vis: false, h: 0, n: 0 };
+  const countClickable = () => {
+    // Count only VISIBLE clickables — a freshly revealed submenu (whether it was
+    // display:none, max-height:0, or off-screen) becomes visible, so a rise here
+    // reliably signals "opened". Counting hidden DOM (querySelectorAll alone) would
+    // miss display:none toggles like hamburger sidebars.
+    let n = 0;
+    document.querySelectorAll('a[href], button, [role="menuitem"], [role="button"]')
+      .forEach(e => { if (isVisible(e)) n++; });
+    return n;
+  };
+
+  const log = [];
+  let opened = 0;
+  const all = Array.from(document.querySelectorAll(TRIGGER_SEL));
+  const beforeTotal = countClickable();
+
+  for (const el of all) {
+    if (el.getAttribute('data-qa-expanded') != null) continue;   // dedup across passes
+    if (!isVisible(el)) continue;
+    const text = (el.innerText || '').trim();
+    if (LOGOUT.test(text)) continue;
+    const reasons = whyCollapsible(el);
+    if (!reasons.length) continue;                               // not a collapsible trigger
+    el.setAttribute('data-qa-expanded', '1');                   // mark handled (dedup)
+    if (el.getAttribute('aria-expanded') === 'true') continue;  // already open
+
+    const target = targetOf(el);
+    const before = snap(target);
+    const beforeCount = countClickable();
+    let result = 'no-change';
+    const evaluate = () => {
+      const aria = el.getAttribute('aria-expanded');
+      const after = snap(target);
+      const delta = countClickable() - beforeCount;
+      if (aria === 'true') return ['opened', Math.max(0, delta)];
+      if (after.vis && !before.vis) return ['opened', Math.max(0, delta)];
+      if (after.h > before.h + 4) return ['opened', Math.max(0, delta)];
+      if (after.n > before.n) return ['opened', Math.max(0, after.n - before.n)];
+      if (delta > 0) return ['opened', delta];
+      return ['no-change', 0];
+    };
+    let newEls = 0;
+    try {
+      el.scrollIntoView({ block: 'center' });
+      el.click();
+      [result, newEls] = evaluate();
+      if (result === 'no-change') {
+        // Stubborn JS menu: hover then click again before giving up.
+        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        el.click();
+        [result, newEls] = evaluate();
+      }
+    } catch (e) { result = 'error'; }
+
+    if (result === 'opened') opened++;
+    log.push({
+      tag: el.tagName.toLowerCase(),
+      text: text.slice(0, 40),
+      cls: (el.className || '').toString().trim().slice(0, 60),
+      why: reasons.slice(0, 4),
+      result: result,
+      newEls: newEls
+    });
+  }
+  return { log: log, opened: opened, newTotal: countClickable() - beforeTotal };
+}
+"""
+
+
+def _expand_collapsible_menus(dp, seed_url, rounds=6):
+    """Recursively expand every collapsible/accordion/dropdown menu on the page so
+    nested nav items render into the DOM, then return the seed if a trigger happened
+    to navigate. Each Playwright pass runs `_EXPAND_ONE_PASS_JS`, waits for async
+    reveals, and repeats — newly revealed triggers get opened on the next round. The
+    data-qa-expanded marker dedups across passes so toggles never loop. Generic.
+
+    Logs every collapsible click: text, which heuristic matched, open/close/no-change,
+    and how many new elements appeared. Returns total collapsibles opened.
+    """
+    seed_clean = seed_url.split('#')[0].rstrip('/')
+    total_opened = 0
+    for _ in range(rounds):
+        try:
+            res = dp.evaluate(_EXPAND_ONE_PASS_JS) or {}
+        except Exception:
+            break
+        entries = res.get('log') or []
+        for e in entries:
+            logger.info(
+                "  collapsible <%s> '%s' [%s] -> %s (+%d new) cls=%s",
+                e.get('tag'), e.get('text'), ",".join(e.get('why') or []),
+                e.get('result'), e.get('newEls') or 0, e.get('cls'))
+        opened = int(res.get('opened') or 0)
+        total_opened += opened
+        # A trigger may have been a real link — get back to the seed if so.
+        if dp.url.split('#')[0].rstrip('/') != seed_clean:
             try:
-                href = link.get_attribute('href')
-                if not href:
+                dp.goto(seed_url, timeout=15000, wait_until='domcontentloaded')
+                time.sleep(0.4)
+            except Exception:
+                break
+        if opened == 0:
+            break          # nothing new opened this round — fully expanded
+        time.sleep(0.5)    # let async submenu content render before the next pass
+    if total_opened:
+        logger.info("collapsible expansion: opened %d menu(s) on %s",
+                    total_opened, seed_clean)
+    return total_opened
+
+
+def discover_links_by_clicking(context, page_url, base_url, max_links=25):
+    """Find authenticated pages whose nav renders as JS router BUTTONS (no <a href>)
+    — common in SPAs (Angular/React routers, encrypted/dynamic menus) — by expanding
+    any collapsible menus and then actually clicking each nav item on a throwaway page
+    (same authed context) and recording where it lands.
+
+    Returns a list of same-origin URLs. Never clicks logout. Best-effort: any
+    failure just yields fewer links, never breaks the crawl. Fully generic — works
+    on any site's sidebar/menu, not a specific app.
+    """
+    base_host = (urlparse(base_url).netloc or '').lower()
+    seed_clean = page_url.split('#')[0].rstrip('/')
+    found = set()
+    try:
+        dp = context.new_page()
+    except Exception:
+        return []
+    try:
+        dp.goto(page_url, timeout=30000, wait_until='domcontentloaded')
+        try:
+            dp.wait_for_load_state('networkidle', timeout=6000)
+        except Exception:
+            pass
+        time.sleep(1.0)
+
+        # 1) Expand collapsible/accordion menus so nested items enter the DOM.
+        _expand_collapsible_menus(dp, page_url)
+
+        # 2) Collect every visible nav label (now including the revealed children).
+        try:
+            labels = dp.evaluate(
+                """(sel) => {
+                    const seen = new Set(); const out = [];
+                    document.querySelectorAll(sel).forEach(el => {
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 && r.height === 0) return;
+                        const t = (el.innerText || '').trim().split('\\n')[0].trim();
+                        if (t && t.length <= 40 && !seen.has(t)
+                            && !/log\\s*out|sign\\s*out|logout/i.test(t)) {
+                            seen.add(t); out.push(t);
+                        }
+                    });
+                    return out.slice(0, 60);
+                }""", _CLICK_NAV_SEL) or []
+        except Exception:
+            labels = []
+
+        logger.info("click discovery: found %d nav label(s) on %s: %s",
+                    len(labels), page_url, labels[:30])
+
+        # 3) Click each label and record where it navigates. Re-expand after every
+        #    navigation because collapsing resets when we return to the seed.
+        for label in labels:
+            if len(found) >= max_links:
+                break
+            try:
+                # Make sure we're on the seed with menus expanded before clicking.
+                if dp.url.split('#')[0].rstrip('/') != seed_clean:
+                    try:
+                        dp.goto(page_url, timeout=15000, wait_until='domcontentloaded')
+                        time.sleep(0.4)
+                    except Exception:
+                        break
+                _expand_collapsible_menus(dp, page_url, rounds=3)
+
+                before = dp.url
+                clicked = dp.evaluate(
+                    """(args) => {
+                        const [sel, label] = args;
+                        for (const el of document.querySelectorAll(sel)) {
+                            const t = (el.innerText || '').trim().split('\\n')[0].trim();
+                            if (t === label) {
+                                try { el.scrollIntoView({block: 'center'}); } catch (e) {}
+                                el.click(); return true;
+                            }
+                        }
+                        return false;
+                    }""", [_CLICK_NAV_SEL, label])
+                if not clicked:
                     continue
-                href = href.strip()
-                if href.startswith(('#', 'javascript:', 'mailto:', 'tel:', 'sms:')):
-                    continue
-                if href.startswith('/'):
-                    full_url = f"{base_parsed.scheme}://{base_domain}{href}"
-                elif href.startswith('http'):
-                    full_url = href
-                else:
-                    full_url = urljoin(base_url, href)
-
-                link_parsed = urlparse(full_url)
-                if link_parsed.netloc != base_domain:
-                    continue
-
-                lower = full_url.lower()
-                if any(lower.endswith(ext) for ext in ['.pdf', '.zip', '.exe', '.dmg', '.tar', '.gz',
-                                                        '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp',
-                                                        '.mp4', '.mp3', '.avi', '.mov',
-                                                        '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']):
-                    continue
-
-                if any(keyword in lower for keyword in ['/logout', '/signout', '/sign-out', '/log-out']):
-                    continue
-
-                clean_url = full_url.split('#')[0].rstrip('/')
-                if clean_url:
-                    discovered.add(clean_url)
-
-                if len(discovered) >= max_pages * 3:
-                    break
-
+                try:
+                    dp.wait_for_load_state('networkidle', timeout=4000)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                cur = dp.url.split('#')[0].rstrip('/')
+                if ((urlparse(cur).netloc or '').lower() == base_host
+                        and cur and cur != before.split('#')[0].rstrip('/')):
+                    found.add(cur)
             except Exception:
                 continue
     except Exception as e:
-        logger.warning("discover_internal_links error: %s", e)
+        logger.warning("click discovery failed for %s: %s", page_url, e)
+    finally:
+        try:
+            dp.close()
+        except Exception:
+            pass
+    logger.info("click discovery: %d route(s) reached by clicking on %s: %s",
+                len(found), page_url, list(found)[:20])
+    return list(found)
 
-    return list(discovered)
+
+# Destructive/irreversible actions we must NEVER auto-click while probing buttons —
+# they could submit forms, delete data, log out, pay, etc. Generic word list.
+_UNSAFE_CLICK_TEXT = re.compile(
+    r"log\s*out|sign\s*out|delete|remove|submit|pay|buy|checkout|confirm|"
+    r"place\s*order|subscribe|unsubscribe|send|save|update|cancel|deactivate|"
+    r"close\s*account|withdraw|transfer|order",
+    re.I,
+)
+
+
+def check_interactions(page, base_url):
+    """Functional / interaction checks — the 'does it actually work?' layer that the
+    static checks miss:
+      * broken images (src 404s — renders empty)                    [major]
+      * an element whose HOVER handler throws a JavaScript error     [major]
+      * a control whose CLICK throws a JavaScript error             [major]
+      * a 'dead' button — clicking it changes nothing at all        [minor]
+
+    GENERIC (no site-specific selectors) and SAFE: only clicks buttons that are
+    clearly non-navigating and non-destructive (skips submit/delete/logout/pay…),
+    skips anything inside a <form>, restores the page if a click navigates, and only
+    hovers otherwise. Best-effort — any failure yields fewer findings, never breaks
+    the crawl.
+    """
+    findings = []
+    IMG_CAP, HOVER_CAP, CLICK_CAP = 40, 15, 15
+
+    # ---- 1) Broken images (objective, always-on) ----
+    try:
+        checked = 0
+        for img in page.query_selector_all('img'):
+            if checked >= IMG_CAP:
+                break
+            checked += 1
+            try:
+                broken = page.evaluate(
+                    "(im) => im.complete && im.naturalWidth === 0 "
+                    "&& !!(im.currentSrc || im.src)", img)
+            except Exception:
+                broken = False
+            if not broken:
+                continue
+            src = (img.get_attribute('src') or img.get_attribute('data-src')
+                   or '(no src)')
+            try:
+                box = img.bounding_box()
+            except Exception:
+                box = None
+            findings.append({
+                'issue_type': 'broken_image',
+                'issue': 'Image fails to load (broken source)',
+                'severity': 'major',
+                'element_selector': _safe_get_selector(img),
+                'parent_context': _safe_get_parent_text(img),
+                'bounding_box': box,
+                'src': src,
+                'display': f"Broken image — does not load: {src[:120]}",
+            })
+    except Exception as e:
+        logger.warning("interactions: broken-image scan error: %s", e)
+
+    # ---- 1b) Broken CSS background images (verified through the real browser) ----
+    try:
+        bg = page.evaluate(
+            """() => {
+                const out = []; const seen = new Set();
+                const els = document.querySelectorAll('*');
+                for (const el of els) {
+                    if (out.length >= 12) break;
+                    const b = getComputedStyle(el).backgroundImage;
+                    if (!b || b === 'none' || !b.includes('url(')) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 8 || r.height < 8) continue;       // ignore icons/spacers
+                    const m = b.match(/url\\(["']?([^"')]+)["']?\\)/);
+                    if (!m) continue;
+                    const url = m[1];
+                    if (!/^https?:/i.test(url) || seen.has(url)) continue;
+                    seen.add(url);
+                    out.push({url, sel: el.id ? ('#'+el.id) : el.tagName.toLowerCase(),
+                              box: {x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height}});
+                }
+                return out;
+            }""") or []
+        req = page.context.request
+        for item in bg:
+            url = item.get('url')
+            try:
+                resp = req.get(url, timeout=8000)
+                status = resp.status
+                try:
+                    resp.dispose()
+                except Exception:
+                    pass
+            except Exception:
+                status = 0
+            if status == 0 or status >= 400:
+                findings.append({
+                    'issue_type': 'broken_image',
+                    'issue': 'Background image fails to load (broken source)',
+                    'severity': 'major',
+                    'element_selector': item.get('sel'),
+                    'bounding_box': item.get('box'),
+                    'src': url,
+                    'display': f"Broken background image ({status or 'unreachable'}): {url[:110]}",
+                })
+    except Exception as e:
+        logger.warning("interactions: background-image scan error: %s", e)
+
+    # ---- 1c) Empty / unlabeled links & buttons (broken nav + a11y) ----
+    try:
+        empties = page.evaluate(
+            """() => {
+                const out = []; let n = 0;
+                const els = document.querySelectorAll('a[href], button, [role=button]');
+                for (const el of els) {
+                    if (n >= 12) break;
+                    const r = el.getBoundingClientRect();
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+                    if (r.width < 4 || r.height < 4) continue;     // not visible/clickable
+                    const label = ((el.innerText || '').trim()
+                        || (el.getAttribute('aria-label') || '').trim()
+                        || (el.getAttribute('title') || '').trim());
+                    const hasImg = el.querySelector('img[alt]:not([alt=""]), svg [aria-label], svg title, [role=img][aria-label]');
+                    const hasIconLabel = el.querySelector('[aria-label]');
+                    if (label || hasImg || hasIconLabel) continue;   // it has SOME label
+                    n++;
+                    out.push({
+                        tag: el.tagName.toLowerCase(),
+                        sel: el.id ? ('#'+el.id)
+                             : (el.getAttribute('href') ? ('a[href="'+el.getAttribute('href')+'"]') : el.tagName.toLowerCase()),
+                        box: {x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height},
+                    });
+                }
+                return out;
+            }""") or []
+        for e in empties:
+            findings.append({
+                'issue_type': 'unlabeled_control',
+                'issue': 'Clickable element has no visible text or label',
+                'severity': 'minor',
+                'element_selector': e.get('sel'),
+                'bounding_box': e.get('box'),
+                'display': f"Empty/unlabeled {e.get('tag')} — no text, screen readers can't name it",
+            })
+    except Exception as e:
+        logger.warning("interactions: empty-control scan error: %s", e)
+
+    # ---- JS-error capture for the hover/click probes ----
+    js_errors = []
+
+    def _on_pageerror(err):
+        try:
+            js_errors.append(str(err))
+        except Exception:
+            js_errors.append('script error')
+
+    try:
+        page.on('pageerror', _on_pageerror)
+    except Exception:
+        pass
+
+    start_url = page.url
+    try:
+        # ---- 2) Hover handlers that throw a JS error ----
+        try:
+            hover_sel = ("img, figure, [class*=hover], [class*=zoom], [class*=card], "
+                         "[class*=thumb], [onmouseover], a:has(img)")
+            count = 0
+            for el in page.query_selector_all(hover_sel):
+                if count >= HOVER_CAP:
+                    break
+                try:
+                    if not el.is_visible():
+                        continue
+                except Exception:
+                    continue
+                count += 1
+                before = len(js_errors)
+                # Measure layout BEFORE hovering: the top of a reference element that
+                # should NOT move (a good hover effect uses CSS transform, which never
+                # reflows siblings; a broken one changes width/height/margin and shoves
+                # the rest of the page — that's the bug we want to catch).
+                # Reference = the bottom-most content block on the page. A hover that
+                # reflows the layout pushes this block down; a good (transform-based)
+                # hover leaves it exactly where it was.
+                _MEASURE_JS = """(e) => {
+                    let ref = document.body.lastElementChild;
+                    if (ref === e || (ref && ref.contains(e))) ref = null;
+                    const rr = ref ? ref.getBoundingClientRect() : null;
+                    const er = e.getBoundingClientRect();
+                    const cs = getComputedStyle(e);
+                    const brokenImg = (e.tagName === 'IMG')
+                        ? (e.complete && e.naturalWidth === 0)
+                        : Array.from(e.querySelectorAll('img')).some(
+                            i => i.complete && i.naturalWidth === 0);
+                    return {
+                        refTop: rr ? Math.round(rr.top) : null,
+                        sh: document.documentElement.scrollHeight,
+                        w: Math.round(er.width), h: Math.round(er.height),
+                        vis: cs.display !== 'none' && cs.visibility !== 'hidden'
+                             && parseFloat(cs.opacity) > 0.01
+                             && er.width > 0 && er.height > 0,
+                        brokenImg: brokenImg,
+                    };
+                }"""
+                try:
+                    box = el.bounding_box()
+                except Exception:
+                    box = None
+                if not box:
+                    continue
+                try:
+                    pre = el.evaluate(_MEASURE_JS)
+                except Exception:
+                    pre = None
+                # Use a real pointer move (not el.hover, which waits for stability and
+                # times out if the element vanishes on hover — which is itself a bug we
+                # want to catch).
+                try:
+                    page.mouse.move(box['x'] + box['width'] / 2,
+                                    box['y'] + box['height'] / 2)
+                    page.wait_for_timeout(250)
+                except Exception:
+                    continue
+
+                if len(js_errors) > before:
+                    findings.append({
+                        'issue_type': 'hover_js_error',
+                        'issue': 'Hovering this element triggers a JavaScript error',
+                        'severity': 'major',
+                        'element_selector': _safe_get_selector(el),
+                        'parent_context': _safe_get_parent_text(el),
+                        'bounding_box': box,
+                        'display': f"Hover error: {js_errors[-1][:120]}",
+                    })
+
+                # Objective hover-behaviour anomalies (no AI, no user input needed).
+                try:
+                    post = el.evaluate(_MEASURE_JS)
+                except Exception:
+                    post = None
+                if pre and post:
+                    label = _safe_get_selector(el)
+                    # a) element (or its image) vanishes on hover
+                    if pre.get('vis') and not post.get('vis'):
+                        findings.append({
+                            'issue_type': 'hover_disappears',
+                            'issue': 'Element disappears when hovered',
+                            'severity': 'major',
+                            'element_selector': label, 'bounding_box': box,
+                            'display': f"Element disappears on hover: {label}",
+                        })
+                    elif not pre.get('brokenImg') and post.get('brokenImg'):
+                        findings.append({
+                            'issue_type': 'hover_image_break',
+                            'issue': 'Image fails to load when hovered',
+                            'severity': 'major',
+                            'element_selector': label, 'bounding_box': box,
+                            'display': f"Image breaks on hover: {label}",
+                        })
+                    else:
+                        # b) hover reflows the page (good hover effects don't move siblings)
+                        rt0, rt1 = pre.get('refTop'), post.get('refTop')
+                        moved = (rt0 is not None and rt1 is not None
+                                 and abs(rt1 - rt0) > 12)
+                        grew = abs((post.get('sh') or 0) - (pre.get('sh') or 0)) > 24
+                        if moved or grew:
+                            findings.append({
+                                'issue_type': 'hover_layout_shift',
+                                'issue': 'Hovering shifts the page layout (content jumps)',
+                                'severity': 'minor',
+                                'element_selector': label, 'bounding_box': box,
+                                'display': f"Hover causes layout to jump: {label}",
+                            })
+                # Move the mouse away so this hover's state doesn't taint the next probe.
+                try:
+                    page.mouse.move(2, 2)
+                    page.wait_for_timeout(60)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("interactions: hover probe error: %s", e)
+
+        # ---- 3) Dead / error-throwing buttons (non-navigating, non-destructive) ----
+        try:
+            count = 0
+            for el in page.query_selector_all("button, [role=button]"):
+                if count >= CLICK_CAP:
+                    break
+                try:
+                    if not el.is_visible() or not el.is_enabled():
+                        continue
+                    txt = (el.inner_text() or '').strip()
+                except Exception:
+                    continue
+                if _UNSAFE_CLICK_TEXT.search(txt):
+                    continue          # never auto-trigger destructive/submit actions
+                try:
+                    if el.evaluate("(e) => !!e.closest('form')"):
+                        continue      # inside a form — could submit; skip
+                except Exception:
+                    continue
+                count += 1
+                before_err = len(js_errors)
+                try:
+                    el.evaluate(
+                        """(e) => {
+                            window.__qa_changed = false;
+                            const o = new MutationObserver(() => { window.__qa_changed = true; });
+                            o.observe(document.documentElement,
+                                      {subtree: true, childList: true, attributes: true});
+                            e.__qa_obs = o;
+                        }""")
+                except Exception:
+                    pass
+                try:
+                    el.click(timeout=1500)
+                    page.wait_for_timeout(200)
+                except Exception:
+                    try:
+                        el.evaluate("(e) => { if (e.__qa_obs) e.__qa_obs.disconnect(); }")
+                    except Exception:
+                        pass
+                    continue
+                try:
+                    navigated = page.url.split('#')[0] != start_url.split('#')[0]
+                except Exception:
+                    navigated = False
+                dom_changed = False
+                if not navigated:
+                    try:
+                        dom_changed = bool(page.evaluate("() => !!window.__qa_changed"))
+                    except Exception:
+                        dom_changed = True   # unknown → don't flag as dead
+                try:
+                    el.evaluate("(e) => { if (e.__qa_obs) { e.__qa_obs.disconnect(); delete e.__qa_obs; } }")
+                except Exception:
+                    pass
+
+                if len(js_errors) > before_err:
+                    findings.append({
+                        'issue_type': 'click_js_error',
+                        'issue': 'Clicking this control triggers a JavaScript error',
+                        'severity': 'major',
+                        'element_selector': _safe_get_selector(el),
+                        'display': f"Click error on '{txt[:40] or 'button'}': {js_errors[-1][:100]}",
+                    })
+                elif navigated:
+                    # It worked (navigated). Restore the page for the rest of the crawl.
+                    try:
+                        page.go_back(timeout=8000)
+                        page.wait_for_timeout(200)
+                    except Exception:
+                        try:
+                            page.goto(start_url, timeout=15000,
+                                      wait_until='domcontentloaded')
+                        except Exception:
+                            pass
+                elif not dom_changed:
+                    try:
+                        box = el.bounding_box()
+                    except Exception:
+                        box = None
+                    findings.append({
+                        'issue_type': 'dead_button',
+                        'issue': 'Button appears dead — clicking it does nothing',
+                        'severity': 'minor',
+                        'element_selector': _safe_get_selector(el),
+                        'bounding_box': box,
+                        'display': f"Dead button — no response on click: '{txt[:40] or 'button'}'",
+                    })
+        except Exception as e:
+            logger.warning("interactions: click probe error: %s", e)
+    finally:
+        # Always end up where we started so downstream link discovery runs on the
+        # correct page, and detach the error listener.
+        try:
+            if page.url.split('#')[0] != start_url.split('#')[0]:
+                page.goto(start_url, timeout=15000, wait_until='domcontentloaded')
+        except Exception:
+            pass
+        try:
+            page.remove_listener('pageerror', _on_pageerror)
+        except Exception:
+            pass
+
+    return findings
+
+
+# Inspect each <form> field and decide whether it declares validation matching its
+# intent. SAFE: pure read-only DOM analysis — never sets values, submits, or sends
+# anything. Heuristic intent detection (name/id/placeholder/type), then checks for a
+# declared format constraint (input type / pattern). Generic, no site-specific rules.
+_FORM_CHECK_JS = r"""
+() => {
+  const out = [];
+  const forms = Array.from(document.querySelectorAll('form')).slice(0, 6);
+  const intentOf = (el) => {
+    const hay = ((el.name || '') + ' ' + (el.id || '') + ' ' +
+                 (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '') +
+                 ' ' + (el.autocomplete || '')).toLowerCase();
+    if (el.type === 'email' || /e-?mail/.test(hay)) return 'email';
+    if (el.type === 'url' || /\b(url|website)\b/.test(hay)) return 'url';
+    if (el.type === 'password' || /pass\s*word|passwd|pwd/.test(hay)) return 'password';
+    if (el.type === 'tel' || /phone|mobile|\btel\b|contact.*(no|number)/.test(hay)) return 'tel';
+    if (el.type === 'number' ||
+        /\b(age|amount|price|qty|quantity|pin\s*code|zip|postal)\b/.test(hay)) return 'number';
+    return null;
+  };
+  const declaresFormat = (el, intent) => {
+    if (el.getAttribute('pattern')) return true;          // explicit regex constraint
+    if (intent === 'email')  return el.type === 'email';  // type=email enforces format
+    if (intent === 'url')    return el.type === 'url';
+    if (intent === 'number') return el.type === 'number';
+    if (intent === 'tel')    return false;                // type=tel does NOT enforce
+    return true;
+  };
+  const SKIP = ['hidden','submit','button','reset','search','file','checkbox','radio','range','color'];
+  forms.forEach((form, fi) => {
+    if (form.getAttribute('role') === 'search') return;
+    Array.from(form.querySelectorAll('input, textarea, select')).forEach(el => {
+      const t = (el.type || '').toLowerCase();
+      if (SKIP.includes(t) || el.disabled) return;
+      const intent = intentOf(el);
+      if (!intent) return;
+      const r = el.getBoundingClientRect();
+      const bbox = (r.width || r.height) ? {x: r.x, y: r.y, width: r.width, height: r.height} : null;
+      const sel = el.name ? ('[name="' + el.name + '"]') : (el.id ? ('#' + el.id) : el.tagName.toLowerCase());
+      const label = el.name || el.id || el.placeholder || el.getAttribute('aria-label') || t || 'input';
+      if (intent === 'password') {
+        const ml = el.getAttribute('minlength');
+        if ((!ml || parseInt(ml, 10) <= 0) && !el.getAttribute('pattern'))
+          out.push({form_index: fi, kind: 'password_no_minlength', selector: sel, bbox, label});
+        return;
+      }
+      if (!declaresFormat(el, intent))
+        out.push({form_index: fi, kind: 'no_format_validation', selector: sel, bbox, label, intent});
+    });
+  });
+  return out.slice(0, 30);
+}
+"""
+
+
+def check_forms(page, base_url):
+    """Form-validation checks. SAFE: read-only — never fills, submits, or sends the
+    form (so it can't create accounts/orders or trigger anything). Flags fields whose
+    purpose (email/phone/url/number/password) has NO declared input validation, so the
+    form would accept clearly-invalid data. Generic; severity kept 'minor' because a
+    site may still validate via custom JS/server — these are 'verify this' findings.
+    """
+    findings = []
+    try:
+        raw = page.evaluate(_FORM_CHECK_JS) or []
+    except Exception as e:
+        logger.warning("forms: evaluate error: %s", e)
+        return findings
+
+    TEMPL = {
+        'no_format_validation': "The '{label}' field has no input validation — it "
+                                "would accept invalid {intent} values",
+        'password_no_minlength': "The password field '{label}' has no minimum-length "
+                                 "requirement",
+    }
+    for r in raw:
+        kind = r.get('kind')
+        label = (r.get('label') or 'input')[:40]
+        intent = r.get('intent') or 'input'
+        text = TEMPL.get(kind, "Form field '{label}' may lack validation").format(
+            label=label, intent=intent)
+        findings.append({
+            'issue_type': kind,
+            'issue': text,
+            'severity': 'minor',
+            'element_selector': r.get('selector'),
+            'bounding_box': r.get('bbox'),
+            'form_index': r.get('form_index'),
+            'display': text,
+        })
+    return findings
+
+
+# Rule-based VISUAL/layout defect detector (runs in the browser). All measurable —
+# pixel positions and sizes — so NO AI and no API credits are needed. Conservative on
+# purpose to avoid false positives. Generic; works on any site.
+_VISUAL_LAYOUT_JS = r"""
+() => {
+  const out = [];
+  const vw = window.innerWidth, vh = window.innerHeight, tol = 4;
+  const sx = window.scrollX, sy = window.scrollY;
+  const vis = (el) => {
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const txt = (el) => (el.innerText || '').trim();
+  const sel = (el) => el.id ? ('#' + el.id)
+    : (typeof el.className === 'string' && el.className.trim()
+        ? el.tagName.toLowerCase() + '.' + el.className.trim().split(/\s+/)[0]
+        : el.tagName.toLowerCase());
+  const box = (r) => ({x: r.x + sx, y: r.y + sy, width: r.width, height: r.height});
+
+  // 1) Page-level horizontal scroll (content wider than the screen)
+  const docW = document.documentElement.scrollWidth;
+  if (docW > vw + tol) {
+    out.push({kind: 'horizontal_scroll', selector: 'page', sev: 'major',
+      text: 'Page is ' + (docW - vw) + 'px wider than the screen — a horizontal scrollbar appears'});
+    let n = 0;
+    for (const el of document.querySelectorAll('body *')) {
+      if (n >= 3) break;
+      if (!vis(el)) continue;
+      const s = getComputedStyle(el);
+      if (s.position === 'fixed' || s.position === 'absolute') continue;
+      const r = el.getBoundingClientRect();
+      if (r.right > vw + 12 && r.width > 20 && r.width <= vw + 300) {
+        out.push({kind: 'overflow_right', selector: sel(el), sev: 'minor', bbox: box(r),
+          text: 'Element runs ' + Math.round(r.right - vw) + 'px past the right edge of the screen: <' + el.tagName.toLowerCase() + '>'});
+        n++;
+      }
+    }
+  }
+
+  // 2) Distorted images (rendered aspect ratio far from natural, no object-fit)
+  let imgN = 0;
+  for (const img of document.querySelectorAll('img')) {
+    if (imgN >= 15) break;
+    if (!vis(img)) continue;
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+    if (!nw || !nh) continue;
+    const of = getComputedStyle(img).objectFit;
+    if (of === 'cover' || of === 'contain' || of === 'scale-down') continue;
+    const r = img.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    const natR = nw / nh, dispR = r.width / r.height;
+    if (Math.abs(natR - dispR) / natR > 0.25) {
+      imgN++;
+      out.push({kind: 'distorted_image', selector: sel(img), sev: 'minor', bbox: box(r),
+        text: 'Image looks stretched/distorted (shown ' + Math.round(r.width) + '×' +
+              Math.round(r.height) + ' vs original ' + nw + '×' + nh + ')'});
+    }
+  }
+
+  // 3) Text cut off / clipped (overflow hidden, no ellipsis)
+  let clipN = 0;
+  for (const el of document.querySelectorAll('h1,h2,h3,h4,p,span,a,button,li,td,div')) {
+    if (clipN >= 10) break;
+    if (!vis(el)) continue;
+    if (el.childElementCount > 1) continue;             // text leaf only — skip layout
+                                                        // wrappers / carousels / scrollers
+    const s = getComputedStyle(el);
+    if (!/hidden|clip/.test(s.overflowX) && !/hidden|clip/.test(s.overflowY)) continue;
+    if (s.textOverflow === 'ellipsis') continue;        // intentional truncation
+    const t = txt(el);
+    if (!t || t.length < 4) continue;
+    if ((el.scrollWidth > el.clientWidth + tol || el.scrollHeight > el.clientHeight + tol)
+        && el.clientWidth > 0 && el.clientHeight > 0) {
+      const r = el.getBoundingClientRect();
+      clipN++;
+      out.push({kind: 'text_clipped', selector: sel(el), sev: 'minor', bbox: box(r),
+        text: 'Text appears cut off / clipped: "' + t.slice(0, 40) + '"'});
+    }
+  }
+
+  // 4) Sibling overlap (same parent, both have text, normal flow) — kept narrow to
+  //    avoid the false positives a global overlap scan produces.
+  let ovN = 0;
+  for (const p of document.querySelectorAll('body *')) {
+    if (ovN >= 6) break;
+    const kids = Array.from(p.children).filter(c => vis(c) && txt(c));
+    for (let i = 0; i < kids.length && ovN < 6; i++) {
+      for (let j = i + 1; j < kids.length && ovN < 6; j++) {
+        const a = kids[i], b = kids[j];
+        const sa = getComputedStyle(a), sb = getComputedStyle(b);
+        if (!/^(static|relative)$/.test(sa.position) || !/^(static|relative)$/.test(sb.position)) continue;
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        const ix = Math.max(0, Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left));
+        const iy = Math.max(0, Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top));
+        const inter = ix * iy;
+        if (inter <= 0) continue;
+        const minA = Math.min(ra.width * ra.height, rb.width * rb.height);
+        if (minA > 0 && inter / minA > 0.4) {
+          ovN++;
+          out.push({kind: 'overlap', selector: sel(a) + ' / ' + sel(b), sev: 'minor', bbox: box(ra),
+            text: 'Two elements overlap: "' + txt(a).slice(0, 25) + '" and "' + txt(b).slice(0, 25) + '"'});
+        }
+      }
+    }
+  }
+
+  return out.slice(0, 40);
+}
+"""
+
+
+def check_visual_layout(page, base_url):
+    """Rule-based VISUAL/layout defects — no AI, no API credits. Catches the things
+    the user can SEE and that are measurable: horizontal scroll, elements running off
+    the screen, distorted (wrong aspect-ratio) images, clipped/cut-off text, and
+    overlapping sibling elements. Conservative to keep false positives low. Generic.
+    """
+    findings = []
+    try:
+        raw = page.evaluate(_VISUAL_LAYOUT_JS) or []
+    except Exception as e:
+        logger.warning("visual layout scan error: %s", e)
+        return findings
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        text = (r.get('text') or '').strip()
+        if not text:
+            continue
+        sev = r.get('sev')
+        if sev not in ('critical', 'major', 'minor', 'info'):
+            sev = 'minor'
+        findings.append({
+            'issue_type': r.get('kind') or 'visual',
+            'issue': text,
+            'severity': sev,
+            'element_selector': r.get('selector'),
+            'bounding_box': r.get('bbox'),
+            'display': text,
+        })
+    return findings
+
+
+# Scan VISIBLE page text for broken values / leaked code / error messages — the kind
+# of bug a user immediately sees but the structural checks miss. Runs in the browser
+# on document.body.innerText (already excludes hidden text). Generic, conservative.
+_CONTENT_SCAN_JS = r"""
+() => {
+  const text = (document.body ? document.body.innerText : '') || '';
+  const out = [];
+  const checks = [
+    ['broken_data', 'major', 'A broken/placeholder value is shown to users',
+      /\[object Object\]|(^|\s)undefined(\s|$|[.,!?)])|(^|\s)NaN(\s|$|[.,!?)])/],
+    ['template_leftover', 'major', 'Unrendered template code is visible on the page',
+      /\{\{\s*[\w.$\[\]]+\s*\}\}|\$\{\s*[\w.$\[\]]+\s*\}/],
+    ['server_error', 'major', 'A server / programming error is visible on the page',
+      /Fatal error|Parse error|Uncaught \w*Error|Traceback \(most recent|Stack trace:|SQLSTATE|Warning:\s|Notice:\s|\bon line \d+/],
+    ['error_ui', 'major', 'An error message is visible on the page',
+      /something went wrong|internal server error|500 internal|503 service unavailable/i],
+    ['placeholder_text', 'minor', 'Placeholder / dummy content was left in',
+      /lorem ipsum|dolor sit amet|\bTODO\b|\bFIXME\b|\bLOREM\b/i],
+  ];
+  for (const [kind, sev, label, re] of checks) {
+    const m = text.match(re);
+    if (m) out.push({kind, sev, label, snippet: (m[0] || '').toString().trim().slice(0, 80)});
+  }
+  return out;
+}
+"""
+
+
+# Plain-language "why this matters" for each finding, so every issue reads as a real,
+# logical problem (user impact) instead of a cryptic technical flag. Keyed first by the
+# specific issue_type, then a per-category fallback. No AI — just a lookup.
+_IMPACT_BY_TYPE = {
+    # interaction / functional
+    'broken_image': "Visitors see a blank/broken image where a picture should be.",
+    'hover_js_error': "The feature errors out when used, so it stops working for the visitor.",
+    'click_js_error': "Clicking this throws an error — the action fails for the visitor.",
+    'dead_button': "The visitor clicks and nothing happens — the feature looks broken.",
+    'hover_layout_shift': "Content jumps when hovered — jarring, and can cause mis-clicks.",
+    'hover_disappears': "The element vanishes on hover, so the visitor can't see or use it.",
+    'hover_image_break': "The image breaks the moment it's hovered.",
+    'unlabeled_control': "Screen readers announce nothing here, and its purpose is unclear.",
+    # forms
+    'no_format_validation': "Users can submit wrong data (e.g. a fake email), creating bad records.",
+    'password_no_minlength': "Weak passwords are allowed, which hurts account security.",
+    # visual / layout
+    'horizontal_scroll': "The page is wider than the screen, forcing awkward sideways scrolling.",
+    'overflow_right': "This element pushes past the screen edge and breaks the layout.",
+    'distorted_image': "The image looks stretched/squished and unprofessional.",
+    'text_clipped': "Part of the text is cut off, so visitors can't read it fully.",
+    'overlap': "Two elements sit on top of each other, looking broken.",
+    # content / data
+    'broken_data': "A raw/placeholder value shows instead of real content — looks broken.",
+    'template_leftover': "Page code is leaking onto the screen instead of real content.",
+    'server_error': "An internal error message is exposed to visitors.",
+    'error_ui': "Visitors see an error message instead of the content they wanted.",
+    'placeholder_text': "Dummy sample text was left in instead of the real content.",
+}
+_IMPACT_BY_CATEGORY = {
+    'broken_links': "Visitors who click this hit a dead page — looks broken and loses trust.",
+    'console_errors': "A script crashed in the browser — page features may silently stop working.",
+    'missing_alt_images': "Screen-reader users and Google can't tell what this image is.",
+    'seo_issues': "Affects how this page shows up in Google search results.",
+    'security_issues': "Leaves the site more exposed to common web attacks.",
+    'accessibility_issues': "Some visitors (low vision / screen readers) can't use this part.",
+    'mobile_issues': "Phone users struggle to tap or read this.",
+    'interaction_issues': "A feature on the page doesn't work as a visitor expects.",
+    'form_issues': "The form can accept bad input or weak data.",
+    'visual_issues': "The page looks broken or hard to read here.",
+    'content_issues': "Visitors see broken or placeholder content instead of the real thing.",
+}
+
+
+def _attach_impacts(findings_dict):
+    """Add a plain 'why' (why it matters) to every finding. Uses its own key — NOT
+    'impact', which axe-core already uses for its severity level (serious/critical…)."""
+    for cat, items in findings_dict.items():
+        for it in items:
+            if isinstance(it, dict) and not it.get('why'):
+                why = _IMPACT_BY_TYPE.get(it.get('issue_type')) or _IMPACT_BY_CATEGORY.get(cat)
+                if why:
+                    it['why'] = why
+    return findings_dict
+
+
+def check_content_quality(page, base_url):
+    """Visible-text quality checks — catches what a user sees instantly but the
+    structural checks miss: 'undefined'/'NaN'/'[object Object]' (broken data binding),
+    unrendered '{{ template }}' code, leaked server/PHP/stack errors, generic error
+    messages, and leftover placeholder text. Generic and conservative."""
+    findings = []
+    try:
+        raw = page.evaluate(_CONTENT_SCAN_JS) or []
+    except Exception as e:
+        logger.warning("content scan error: %s", e)
+        return findings
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        label = (r.get('label') or '').strip()
+        snip = (r.get('snippet') or '').strip()
+        sev = r.get('sev') if r.get('sev') in ('critical', 'major', 'minor', 'info') else 'minor'
+        if not label:
+            continue
+        findings.append({
+            'issue_type': r.get('kind') or 'content',
+            'issue': label,
+            'severity': sev,
+            'snippet': snip,
+            'display': f"{label}" + (f': "{snip}"' if snip else ''),
+        })
+    return findings
 
 
 def test_single_page(page, page_url, response_headers, console_messages, is_mobile=True):
@@ -1149,12 +2351,16 @@ def test_single_page(page, page_url, response_headers, console_messages, is_mobi
     # session valid), where these would flag every normal desktop control as a
     # "too small tap target" — pure noise. Skip them off mobile.
     mobile_issues = check_mobile(page) if is_mobile else []
+    interaction_issues = check_interactions(page, page_url)
+    form_issues = check_forms(page, page_url)
+    visual_issues = check_visual_layout(page, page_url)
+    content_issues = check_content_quality(page, page_url)
     real_errors = filter_console_errors(console_messages, base_url=page_url)
     console_errors_rich = [
         {**msg, 'element_selector': 'console', 'parent_context': ''}
         for msg in real_errors
     ]
-    return {
+    return _attach_impacts({
         'broken_links': broken_links,
         'console_errors': console_errors_rich,
         'missing_alt_images': missing_alt,
@@ -1162,7 +2368,11 @@ def test_single_page(page, page_url, response_headers, console_messages, is_mobi
         'security_issues': security_issues,
         'accessibility_issues': accessibility_issues,
         'mobile_issues': mobile_issues,
-    }
+        'interaction_issues': interaction_issues,
+        'form_issues': form_issues,
+        'visual_issues': visual_issues,
+        'content_issues': content_issues,
+    })
 
 
 def tag_findings_with_page(findings_dict, page_url):
@@ -1188,6 +2398,10 @@ def merge_findings(all_pages_findings):
         'security_issues': [],
         'accessibility_issues': [],
         'mobile_issues': [],
+        'interaction_issues': [],
+        'form_issues': [],
+        'visual_issues': [],
+        'content_issues': [],
     }
     # A stable identity per category so the same defect isn't recounted per page.
     keyers = {
@@ -1200,6 +2414,18 @@ def merge_findings(all_pages_findings):
         # issue text embeds per-page counts ("3 tap targets…" vs "1 tap target…"),
         # so key on the stable issue_type instead — same defect, one finding.
         'mobile_issues': lambda i: i.get('issue_type') or i.get('issue'),
+        # A broken image / dead button is identified by its element + type.
+        'interaction_issues': lambda i: (i.get('issue_type'),
+                                         i.get('src') or i.get('element_selector')),
+        'form_issues': lambda i: (i.get('issue_type'), i.get('element_selector'),
+                                  i.get('form_index')),
+        # Visual defects: same type + element (or same AI description) → count once.
+        'visual_issues': lambda i: (i.get('issue_type'),
+                                    i.get('element_selector')
+                                    or (i.get('issue') or '')[:80].lower()),
+        # Same broken-text kind + snippet across pages → count once.
+        'content_issues': lambda i: (i.get('issue_type'),
+                                     (i.get('snippet') or i.get('issue') or '')[:60].lower()),
     }
     # Categories where a repeat across pages should ADD to the first finding's
     # count (and remember which pages were affected) instead of being dropped.
@@ -1259,13 +2485,40 @@ def run_test(testcase_id):
 @runner_bp.route('/run/<int:testcase_id>/async', methods=['POST'])
 @jwt_required()
 def run_test_async(testcase_id):
-    """Queue the run on a background worker and return a job id immediately."""
+    """Queue the run on a background worker and return a job id immediately.
+
+    If the project has no valid captured login session, the crawl would run as a
+    logged-out (public) visitor — meaningless for login-gated sites. We block the
+    first attempt with 409 + needs_login_confirm so the UI can warn; the client
+    re-sends with ?force=true once the user has confirmed (or after logging in)."""
     user_id = int(get_jwt_identity())
     tc = user_owns_testcase(user_id, testcase_id)
     if not tc:
         return jsonify({'error': 'Test case not found'}), 404
     if tc['test_type'] != 'automated':
         return jsonify({'error': 'Only automated test cases can be run'}), 400
+
+    force = (request.args.get('force') == 'true'
+             or bool((request.get_json(silent=True) or {}).get('force')))
+    logger.info("run_test_async: tc=%s requires_login=%s force=%s",
+                testcase_id, tc.get('requires_login'), force)
+    # Only warn for sites the user marked as login-required. Public sites are
+    # meant to be tested logged-out, so they run straight through.
+    if not force and tc.get('requires_login'):
+        session_path = _session_state_path(tc.get('project_id'))
+        valid = False
+        if session_path:
+            valid, _warn = _session_expiry_info(session_path)
+        if not valid:
+            logger.info("run_test_async: blocking tc=%s with needs_login_confirm "
+                        "(no valid session)", testcase_id)
+            return jsonify({
+                'needs_login_confirm': True,
+                'error': ('No saved login session for this project. The test will run '
+                          'as a logged-out (public) visitor, so any pages behind a login '
+                          'will not be tested. Use "Open & Login" on the Projects page '
+                          'first if this site needs login.'),
+            }), 409
 
     job_id = job_manager.submit(user_id, testcase_id, dict(tc))
     return jsonify({'job_id': job_id, 'status': 'queued'}), 202
@@ -1370,9 +2623,23 @@ def manual_done(testcase_id):
 
     pages = snap.get('pages') or []
     first_shot = pages[0]['screenshot'] if pages else ''
+
+    # Aggregate the per-page QA findings the manual worker collected as the user
+    # walked the (authenticated) site, so a manual run produces a real report —
+    # deduped across pages, with a computed health score — not just screenshots.
+    all_pages_findings = []
+    for p in pages:
+        f = p.get('findings')
+        if isinstance(f, dict):
+            all_pages_findings.append(tag_findings_with_page(f, p.get('url', '')))
+    merged = merge_findings(all_pages_findings) if all_pages_findings else {}
+    issues_found = sum(len(v) for v in merged.values()) if merged else 0
+    health = calculate_health_score(merged) if merged else (100 if outcome == 'Pass' else 0)
+
     findings_evidence = json.dumps({
         'manual': True,
         'note': note,
+        'summary': merged,
         'pages': pages,
     })
 
@@ -1392,9 +2659,9 @@ def manual_done(testcase_id):
                 testcase_id, outcome,
                 first_shot,
                 duration_ms,
-                0, len(pages),
+                issues_found, len(pages),
                 findings_evidence,
-                100 if outcome == 'Pass' else 0,
+                health,
             )
         )
         run_id = cursor.lastrowid
@@ -1411,6 +2678,8 @@ def manual_done(testcase_id):
         'run_id': run_id,
         'status': outcome,
         'pages_visited': len(pages),
+        'issues_found': issues_found,
+        'health_score': health,
         'duration_ms': duration_ms,
         'screenshots': [p['screenshot'] for p in pages],
     }), 200
@@ -1587,6 +2856,38 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         queued.add(landing_clean)
                         logger.info("crawl will start from authenticated landing: %s", landing_clean)
 
+                # Seed authenticated routes the SPA stored in its menu payload
+                # (sessionStorage/localStorage). These are pages whose nav links
+                # render as JS router buttons, not <a href>, so normal discovery
+                # never reaches them (dashboard, account, bank-details, etc.).
+                seeded = 0
+                for route in _routes_from_captured_storage(tc.get('project_id'), base_clean):
+                    if route not in queued:
+                        to_visit.append(route)
+                        queued.add(route)
+                        seeded += 1
+                if seeded:
+                    logger.info("seeded %d authenticated route(s) from captured menu/storage", seeded)
+
+                # Click-discover authenticated pages whose nav is JS buttons (no
+                # <a href>) — the encrypted-menu case. Done on a throwaway page in
+                # the same authed context; the URLs found get the full test below.
+                click_seed = (landing_clean if landing else None) or origin_root or base_clean
+                if click_seed:
+                    try:
+                        clicked_routes = discover_links_by_clicking(context, click_seed, base_clean)
+                    except Exception as e:
+                        logger.warning("click discovery seed failed: %s", e)
+                        clicked_routes = []
+                    cseeded = 0
+                    for route in clicked_routes:
+                        if route not in queued:
+                            to_visit.append(route)
+                            queued.add(route)
+                            cseeded += 1
+                    if cseeded:
+                        logger.info("seeded %d authenticated route(s) by clicking the nav menu", cseeded)
+
             # Auth warmup. SPAs (like digielv) often hit a separate API to validate the
             # session and only THEN redirect from /user-login to the dashboard. We open
             # the root once, let JS hydrate, and capture the resolved URL. If it lands
@@ -1606,14 +2907,17 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         kw in landed.lower()
                         for kw in ('login', 'signin', 'sign-in', 'sign_in', 'auth')
                     )
-                    if landed and landed not in queued and not looks_like_login:
+                    if looks_like_login:
+                        logger.warning("auth warmup: landed on login page '%s' — session may be "
+                                       "invalid/expired (re-capture via Open & Login)", landed)
+                    elif landed and landed not in queued:
                         # Front of the queue so the crawl starts from the authenticated
                         # landing page, not the configured /user-login URL.
                         to_visit.insert(0, landed)
                         queued.add(landed)
                         logger.info("auth warmup: authenticated landing = %s", landed)
                     else:
-                        logger.warning("auth warmup: landed on '%s' (looks like login) — session may not be valid", landed)
+                        logger.info("auth warmup: landed on '%s' (already queued)", landed)
                     warm.close()
                 except Exception as e:
                     logger.warning("auth warmup failed: %s", e)
@@ -1756,6 +3060,19 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                             page_findings['mobile_issues'], 'mobile',
                             screenshot_path, evidence_dir, crop_run_id, page_idx
                         )
+                        page_findings['interaction_issues'] = _enrich_with_crops(
+                            page_findings.get('interaction_issues', []), 'interaction',
+                            screenshot_path, evidence_dir, crop_run_id, page_idx
+                        )
+                        page_findings['form_issues'] = _enrich_with_crops(
+                            page_findings.get('form_issues', []), 'form',
+                            screenshot_path, evidence_dir, crop_run_id, page_idx
+                        )
+                        page_findings['visual_issues'] = _enrich_with_crops(
+                            page_findings.get('visual_issues', []), 'visual',
+                            screenshot_path, evidence_dir, crop_run_id, page_idx
+                        )
+
 
                     # Discover further internal links from this rendered page and
                     # enqueue any we haven't seen (BFS), until the queue holds enough
@@ -1825,6 +3142,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         'display': item.get('display', str(item)),
                         'page_url': item.get('page_url', ''),
                         'severity': item.get('severity', 'minor'),
+                        'screenshot_crop': item.get('screenshot_crop'),
+                        'why': item.get('why', ''),
                     }
                     for item in items
                 ]
@@ -1947,6 +3266,10 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 'security_issues': display_findings['security_issues'],
                 'accessibility_issues': display_findings['accessibility_issues'],
                 'mobile_issues': display_findings['mobile_issues'],
+                'interaction_issues': display_findings.get('interaction_issues', []),
+                'form_issues': display_findings.get('form_issues', []),
+                'visual_issues': display_findings.get('visual_issues', []),
+                'content_issues': display_findings.get('content_issues', []),
             }, 200
 
     except Exception as e:

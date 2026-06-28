@@ -17,8 +17,11 @@ export const runTestCase = (testCaseId) =>
   });
 
 // Queue a test run on a background worker; returns { job_id } immediately.
-export const runTestCaseAsync = (testCaseId) =>
-  axios.post(`${API_URL}/run/${testCaseId}/async`, {}, getAuthHeader());
+// Pass force=true to run even when no login session is captured (after the user
+// has confirmed they want a logged-out crawl).
+export const runTestCaseAsync = (testCaseId, force = false) =>
+  axios.post(`${API_URL}/run/${testCaseId}/async${force ? '?force=true' : ''}`,
+    {}, getAuthHeader());
 
 // Poll a queued run's status/progress/result.
 export const getRunJob = (jobId) =>

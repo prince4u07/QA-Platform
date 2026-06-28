@@ -6,7 +6,7 @@ import {
   CheckCircle2, XCircle, RotateCcw, Wand2, X, Clock, Gauge,
   Package, Repeat, Link2, Bug, ImageOff, Search, ShieldAlert,
   Accessibility, Smartphone, Camera, Loader2, Inbox, PartyPopper,
-  ChevronDown, ChevronRight, Network, AlertTriangle,
+  ChevronDown, ChevronRight, Network, AlertTriangle, MousePointerClick, FormInput, Eye, FileWarning,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -66,6 +66,10 @@ const CATEGORY_META = {
   security_issues: { Icon: ShieldAlert, label: 'Security Issues', tone: 'text-red-300 bg-red-500/15' },
   accessibility_issues: { Icon: Accessibility, label: 'Accessibility Issues', tone: 'text-brand-indigo bg-brand-indigo/15' },
   mobile_issues: { Icon: Smartphone, label: 'Mobile Issues', tone: 'text-brand-sky bg-brand-sky/15' },
+  interaction_issues: { Icon: MousePointerClick, label: 'Functional / Interaction Issues', tone: 'text-orange-300 bg-orange-500/15' },
+  form_issues: { Icon: FormInput, label: 'Form Validation Issues', tone: 'text-yellow-300 bg-yellow-500/15' },
+  visual_issues: { Icon: Eye, label: 'Visual / Design Issues', tone: 'text-fuchsia-300 bg-fuchsia-500/15' },
+  content_issues: { Icon: FileWarning, label: 'Content / Data Issues', tone: 'text-red-300 bg-red-500/15' },
 };
 
 const SEVERITY_TONE = {
@@ -103,19 +107,33 @@ const IssueCategory = ({ categoryKey, items }) => {
           const text = isStr ? item : (item.display || item.url || item.issue || JSON.stringify(item));
           const severity = isStr ? null : item.severity;
           const pageUrl = isStr ? '' : item.page_url;
+          const crop = isStr ? null : item.screenshot_crop;
+          const impact = isStr ? null : item.why;
           return (
-            <div key={i} className="text-slate-300 break-words flex flex-wrap items-baseline gap-2">
-              <span className="text-slate-500 flex-shrink-0">•</span>
-              {severity && (
-                <span className={'text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border ' + (SEVERITY_TONE[severity] || SEVERITY_TONE.minor)}>
-                  {severity}
-                </span>
+            <div key={i} className="text-slate-300 break-words">
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="text-slate-500 flex-shrink-0">•</span>
+                {severity && (
+                  <span className={'text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border ' + (SEVERITY_TONE[severity] || SEVERITY_TONE.minor)}>
+                    {severity}
+                  </span>
+                )}
+                <span className="flex-1 min-w-0">{text}</span>
+                {pageUrl && (
+                  <span className="text-[11px] text-slate-400 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded" title={pageUrl}>
+                    on {pageLabel(pageUrl)}
+                  </span>
+                )}
+              </div>
+              {impact && (
+                <p className="ml-4 mt-0.5 text-[11px] text-slate-400 italic">Why it matters: {impact}</p>
               )}
-              <span className="flex-1 min-w-0">{text}</span>
-              {pageUrl && (
-                <span className="text-[11px] text-slate-400 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded" title={pageUrl}>
-                  on {pageLabel(pageUrl)}
-                </span>
+              {crop && (
+                <a href={assetUrl(crop)} target="_blank" rel="noopener noreferrer"
+                   className="mt-1.5 ml-4 block w-fit" title="Screenshot of this exact issue">
+                  <img src={assetUrl(crop)} alt="Issue screenshot" loading="lazy"
+                       className="max-h-28 rounded-md border border-white/15" />
+                </a>
               )}
             </div>
           );
@@ -138,6 +156,10 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
     'Security': (findings.security_issues || []).length,
     'Accessibility': (findings.accessibility_issues || []).length,
     'Mobile': (findings.mobile_issues || []).length,
+    'Functional': (findings.interaction_issues || []).length,
+    'Forms': (findings.form_issues || []).length,
+    'Visual': (findings.visual_issues || []).length,
+    'Content': (findings.content_issues || []).length,
   } : null;
 
   return (
@@ -222,6 +244,16 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
                                 }>{f.severity}</span>
                               )}
                               {f.display || f.url || f.text || f.issue || f.src || JSON.stringify(f)}
+                              {f.why && (
+                                <span className="block mt-0.5 text-[11px] text-slate-400 italic">Why it matters: {f.why}</span>
+                              )}
+                              {f.screenshot_crop && (
+                                <a href={assetUrl(f.screenshot_crop)} target="_blank" rel="noopener noreferrer"
+                                   className="mt-1.5 block w-fit" title="Screenshot of this exact issue">
+                                  <img src={assetUrl(f.screenshot_crop)} alt="Issue screenshot" loading="lazy"
+                                       className="max-h-28 rounded-md border border-white/15" />
+                                </a>
+                              )}
                             </li>
                           ))}
                           {arr.length > 5 && (
@@ -535,7 +567,24 @@ const TestCases = () => {
     setConversionMessage('');
     try {
       // Queue the run on a background worker, then poll for progress/result.
-      const startRes = await runTestCaseAsync(tc.id);
+      // If the project has no login session, the backend blocks with 409 so we
+      // can warn that the crawl would run logged-out; re-send with force on OK.
+      let startRes;
+      try {
+        startRes = await runTestCaseAsync(tc.id);
+      } catch (err) {
+        if (err.response?.status === 409 && err.response?.data?.needs_login_confirm) {
+          const proceed = window.confirm(
+            (err.response.data.error || 'No login session for this project.') +
+            '\n\nClick OK to run anyway as a logged-out visitor, or Cancel to log in '
+            + 'first via "Open & Login" on the Projects page.'
+          );
+          if (!proceed) return;   // finally{} resets the running state
+          startRes = await runTestCaseAsync(tc.id, true);
+        } else {
+          throw err;
+        }
+      }
       const jobId = startRes.data.job_id;
       setRunJobId(tc.id, jobId);
 
@@ -1356,6 +1405,10 @@ const TestCases = () => {
                   <IssueCategory categoryKey="security_issues" items={runResult.security_issues} />
                   <IssueCategory categoryKey="accessibility_issues" items={runResult.accessibility_issues} />
                   <IssueCategory categoryKey="mobile_issues" items={runResult.mobile_issues} />
+                  <IssueCategory categoryKey="interaction_issues" items={runResult.interaction_issues} />
+                  <IssueCategory categoryKey="form_issues" items={runResult.form_issues} />
+                  <IssueCategory categoryKey="visual_issues" items={runResult.visual_issues} />
+                  <IssueCategory categoryKey="content_issues" items={runResult.content_issues} />
                 </>
               )}
 

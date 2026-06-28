@@ -70,7 +70,8 @@ class _ManualSession:
         self.finished_at = None
 
         # Live snapshot for the UI to poll.
-        self.pages = []             # [{url, screenshot, captured_at, source: 'manual'|'auto'}]
+        self.pages = []             # [{url, screenshot, captured_at, source, findings, issues_count, health}]
+        self._console = []          # console errors/warnings for the current page
 
         self._action_event = threading.Event()
         self._autocrawl_event = threading.Event()
@@ -126,6 +127,11 @@ class _ManualSession:
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                 )
                 page = context.new_page()
+                # Capture console errors/warnings so each page's QA checks can
+                # report JS exceptions / failed resources, same as the automated run.
+                page.on('console', lambda msg:
+                    self._console.append({'type': msg.type, 'text': msg.text})
+                    if msg.type in ('error', 'warning') else None)
 
                 try:
                     page.goto(self.base_url, timeout=60000, wait_until='commit')
@@ -243,8 +249,48 @@ class _ManualSession:
                 self.pages.append(entry)
             logger.info("manual-run %s: captured page %d (%s) [%s]",
                         self.run_id, idx, url, source)
+            # Run the same QA checks the automated crawl runs, so the user gets a
+            # real report for the authenticated pages they walk — not just shots.
+            self._run_page_checks(page, url, entry)
         except Exception as e:
             logger.warning("manual-run screenshot failed: %s", e)
+
+    def _run_page_checks(self, page, url, entry):
+        """Run the page-level QA checks on the currently-loaded page and attach
+        the findings to its capture entry. Best-effort: a check failure must never
+        break the manual run."""
+        try:
+            from modules.runner.routes import (
+                check_broken_links, check_missing_alt, check_seo, check_security,
+                check_accessibility, filter_console_errors, calculate_health_score,
+            )
+        except Exception:
+            return
+        console = list(self._console)
+        self._console.clear()          # attribute console output per page
+        try:
+            findings = {
+                'broken_links': check_broken_links(page, url),
+                'missing_alt_images': check_missing_alt(page),
+                'seo_issues': check_seo(page, url),
+                # response headers aren't captured in a hand-driven run -> None,
+                # which tells check_security to skip header-presence checks.
+                'security_issues': check_security(url, None, page=page,
+                                                  console_messages=console),
+                'accessibility_issues': check_accessibility(page),
+                'mobile_issues': [],   # manual run is a desktop window
+                'console_errors': filter_console_errors(console, base_url=url),
+            }
+        except Exception as e:
+            logger.warning("manual-run page checks failed (%s): %s", url, e)
+            return
+        issues = sum(len(v) for v in findings.values() if isinstance(v, list))
+        health = calculate_health_score(findings)
+        with self._lock:
+            entry['findings'] = findings
+            entry['issues_count'] = issues
+            entry['health'] = health
+        logger.info("manual-run %s: %s -> %d issues, health %d", self.run_id, url, issues, health)
 
     def _auto_crawl(self, page):
         """Walk the site BFS-style starting from the page's current URL,
@@ -314,8 +360,93 @@ class _ManualSession:
                     to_visit.append(clean)
             visited.add(url)
 
+        # Button/JS menus (encrypted SPA navs like DigiELV) expose NO <a href>, so
+        # the href crawl above can't reach them. Do a bounded click sweep of the
+        # nav/menu items to reach those authenticated pages too.
+        try:
+            self._click_crawl_menus(page, seed)
+        except Exception as e:
+            logger.warning("manual auto-crawl click sweep failed: %s", e)
+
         logger.info("manual-run %s: auto-crawl finished (%d pages total)",
                     self.run_id, len(self.pages))
+
+    # Selector for nav/menu-ish clickable items (covers React/Angular sidebars).
+    _NAV_SEL = ("nav a, nav button, aside a, aside button, header a, header button, "
+                "[role=menuitem], [role=link], [class*=menu] a, [class*=menu] button, "
+                "[class*=sidebar] a, [class*=sidebar] button, [class*=nav] a, [class*=nav] button")
+
+    def _click_crawl_menus(self, page, seed):
+        """Click nav/menu items that aren't plain <a href> (JS router buttons) and
+        capture wherever each lands. Bounded, same-origin only, never clicks logout.
+        After each click we return to `seed` so the menu is present for the next."""
+        from urllib.parse import urlparse
+        base_host = (urlparse(seed).netloc or '').lower()
+        try:
+            labels = page.evaluate(
+                """(sel) => {
+                    const seen = new Set(); const out = [];
+                    document.querySelectorAll(sel).forEach(el => {
+                        const t = (el.innerText || '').trim();
+                        if (t && t.length <= 40 && !seen.has(t)
+                            && !/log\\s*out|sign\\s*out|logout/i.test(t)) {
+                            seen.add(t); out.push(t);
+                        }
+                    });
+                    return out.slice(0, 60);
+                }""", self._NAV_SEL) or []
+        except Exception:
+            labels = []
+
+        for label in labels:
+            if len(self.pages) >= self.max_pages or self._action_event.is_set():
+                break
+            visited = {p['url'].rstrip('/').split('#')[0] for p in self.pages}
+            try:
+                before = page.url
+            except Exception:
+                before = seed
+            try:
+                clicked = page.evaluate(
+                    """(args) => {
+                        const [sel, label] = args;
+                        for (const el of document.querySelectorAll(sel)) {
+                            if ((el.innerText || '').trim() === label) {
+                                try { el.scrollIntoView({block: 'center'}); } catch (e) {}
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""", [self._NAV_SEL, label])
+            except Exception:
+                clicked = False
+            if not clicked:
+                continue
+            try:
+                page.wait_for_load_state('networkidle', timeout=4000)
+            except Exception:
+                pass
+            time.sleep(0.6)
+            try:
+                cur = page.url
+            except Exception:
+                cur = before
+            cur_clean = cur.rstrip('/').split('#')[0]
+            same_site = (urlparse(cur).netloc or '').lower() == base_host
+            if same_site and cur_clean not in visited:
+                self._capture(page, source='auto')      # screenshot + full checks
+            # Return to the seed page so the menu is available for the next click.
+            if cur_clean != seed.rstrip('/').split('#')[0]:
+                try:
+                    page.go_back()
+                    page.wait_for_load_state('networkidle', timeout=4000)
+                    time.sleep(0.4)
+                    if page.url.rstrip('/').split('#')[0] != seed.rstrip('/').split('#')[0]:
+                        page.goto(seed, timeout=15000, wait_until='domcontentloaded')
+                        time.sleep(0.4)
+                except Exception:
+                    pass
 
     # ---- control ----
     def start(self):

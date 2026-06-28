@@ -50,6 +50,13 @@ try:
     if not cursor.fetchone():
         cursor.execute("ALTER TABLE projects ADD COLUMN session_captured_at TIMESTAMP NULL")
         print("✓ Added 'session_captured_at' column")
+
+    # Check and add requires_login column (marks login-gated sites so a no-session
+    # automated run warns the user instead of silently crawling logged-out)
+    cursor.execute("SHOW COLUMNS FROM projects LIKE 'requires_login'")
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE projects ADD COLUMN requires_login BOOLEAN DEFAULT FALSE")
+        print("✓ Added 'requires_login' column")
     
     # Add indexes for performance
     cursor.execute("SHOW INDEX FROM projects WHERE column_name='user_id'")
