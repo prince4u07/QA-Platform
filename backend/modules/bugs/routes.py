@@ -166,23 +166,6 @@ def create_bug():
     evidence = data.get('evidence')
     evidence_json = json.dumps(evidence) if evidence else None
 
-    # If this bug is linked to a test case, that test case MUST belong to the
-    # caller. Without this check any authenticated user could attach a bug to
-    # another tenant's test case (cross-tenant data injection) and, since the
-    # bug's assigned_to is set to themselves, read/update/delete it afterwards.
-    if test_case_id is not None:
-        chk = mysql.connection.cursor()
-        chk.execute(
-            """SELECT tc.id FROM test_cases tc
-               JOIN projects p ON tc.project_id = p.id
-               WHERE tc.id = %s AND p.user_id = %s""",
-            (test_case_id, user_id)
-        )
-        owns_tc = chk.fetchone()
-        chk.close()
-        if not owns_tc:
-            return jsonify({'error': 'Test case not found'}), 404
-
     try:
         cursor = mysql.connection.cursor()
         cursor.execute(

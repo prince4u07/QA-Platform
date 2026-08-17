@@ -5,7 +5,6 @@ import Tilt from 'react-parallax-tilt';
 import {
   Plus,
   FolderOpen,
-  Globe,
   ShieldCheck,
   Unlock,
   ExternalLink,
@@ -53,7 +52,7 @@ const Projects = () => {
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [description, setDescription] = useState('');
-  const [requiresLogin, setRequiresLogin] = useState(false);
+  const [environment, setEnvironment] = useState('dev');
 
   // For "Open & Login" button feedback
   const [openingLoginFor, setOpeningLoginFor] = useState(null);
@@ -96,17 +95,13 @@ const Projects = () => {
   const isUrlValid = /^https?:\/\/.+\..+/.test(baseUrl);
   const isNameValid = name.trim().length >= 3;
 
-  const canSubmit = () => {
-    if (saving) return false;
-    if (!isNameValid) return false;
-    return isUrlValid;
-  };
+  const canSubmit = () => !saving && isNameValid && isUrlValid;
 
   const resetForm = () => {
     setName('');
     setBaseUrl('');
     setDescription('');
-    setRequiresLogin(false);
+    setEnvironment('dev');
     setEditingId(null);
     setError('');
   };
@@ -120,7 +115,7 @@ const Projects = () => {
     setName(p.name);
     setBaseUrl(p.base_url);
     setDescription(p.description || '');
-    setRequiresLogin(!!p.requires_login);
+    setEnvironment(p.environment);
     setEditingId(p.id);
     setError('');
     setShowModal(true);
@@ -138,21 +133,18 @@ const Projects = () => {
     setSaving(true);
     setError('');
 
+    const payload = {
+      name: name.trim(),
+      base_url: baseUrl.trim(),
+      description: description.trim(),
+      environment,
+    };
+
     try {
       if (editingId) {
-        await updateProject(editingId, {
-          name: name.trim(),
-          base_url: baseUrl.trim(),
-          description: description.trim(),
-          requires_login: requiresLogin,
-        });
+        await updateProject(editingId, payload);
       } else {
-        await createProject({
-          name: name.trim(),
-          base_url: baseUrl.trim(),
-          description: description.trim(),
-          requires_login: requiresLogin,
-        });
+        await createProject(payload);
       }
       closeModal();
       setCurrentPage(1); // Reset to first page
@@ -218,6 +210,12 @@ const Projects = () => {
     }
   };
 
+  const envColor = (env) => {
+    if (env === 'prod') return 'bg-red-500/15 text-red-300 border border-red-500/20';
+    if (env === 'staging') return 'bg-amber-500/15 text-amber-300 border border-amber-500/20';
+    return 'bg-brand-teal/15 text-brand-teal border border-brand-teal/20';
+  };
+
   // Format the session captured_at date
   const formatSessionAge = (capturedAt) => {
     if (!capturedAt) return null;
@@ -241,6 +239,11 @@ const Projects = () => {
   const inputBase =
     'w-full rounded-xl bg-white/5 border px-4 py-2.5 text-slate-100 placeholder:text-slate-500 ' +
     'focus:outline-none focus:ring-2 transition';
+  const toggleClass = (active) =>
+    'flex-1 cursor-pointer px-4 py-2.5 border rounded-xl text-center text-sm transition ' +
+    (active
+      ? 'border-brand-indigo/60 bg-brand-indigo/15 text-white font-medium'
+      : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/5');
 
   return (
     <div className="relative flex min-h-screen text-slate-200">
@@ -257,7 +260,7 @@ const Projects = () => {
           <div>
             <h1 className="text-3xl font-display font-bold text-white">Test Projects</h1>
             <p className="text-slate-400 mt-1">
-              Test live websites — automated and manual QA
+              Register a website and run automated quality audits against it
             </p>
           </div>
           <button
@@ -315,13 +318,12 @@ const Projects = () => {
                         <h3 className="text-lg font-display font-bold text-white truncate flex-1">
                           {p.name}
                         </h3>
+                        <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + envColor(p.environment)}>
+                          {p.environment.toUpperCase()}
+                        </span>
                       </div>
 
                       <div className="mb-3 flex flex-wrap gap-2">
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-sky/15 text-brand-sky">
-                          <Globe className="w-3.5 h-3.5" /> Live URL
-                        </span>
-
                         {p.has_active_session ? (
                           <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-teal/15 text-brand-teal">
                             <ShieldCheck className="w-3.5 h-3.5" /> Logged in
@@ -348,16 +350,15 @@ const Projects = () => {
                       )}
 
                       {/* Session info text */}
-                      {p.has_active_session && p.session_captured_at && (
+                      {p.has_active_session && p.session_captured_at ? (
                         <div className="flex items-center gap-1.5 text-xs text-brand-teal mb-3">
                           <Lock className="w-3.5 h-3.5" /> Session captured {formatSessionAge(p.session_captured_at)}
                         </div>
-                      )}
-                      {!p.has_active_session && (
+                      ) : !p.has_active_session ? (
                         <div className="flex items-center gap-1.5 text-xs text-slate-500 mb-3">
                           <Lightbulb className="w-3.5 h-3.5" /> If site requires login, click below before testing
                         </div>
-                      )}
+                      ) : null}
 
                       <div className="mt-auto">
                         <button
@@ -525,23 +526,6 @@ const Projects = () => {
                 )}
               </div>
 
-              <label className="flex items-start gap-3 cursor-pointer rounded-xl border border-white/10 bg-white/5 p-3">
-                <input
-                  type="checkbox"
-                  checked={requiresLogin}
-                  onChange={(e) => setRequiresLogin(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 accent-brand-indigo"
-                />
-                <span className="text-sm text-slate-300">
-                  This site requires login to access its main content
-                  <span className="block text-xs text-slate-500 mt-0.5">
-                    If ticked, running a test without a saved login session will warn you
-                    first (so login-gated pages aren&apos;t skipped). Leave unchecked for
-                    public sites.
-                  </span>
-                </span>
-              </label>
-
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-1.5">Description</label>
                 <textarea
@@ -553,6 +537,23 @@ const Projects = () => {
                 />
               </div>
 
+              <div>
+                <label className="block text-slate-300 text-sm font-medium mb-1.5">Environment</label>
+                <div className="flex gap-3">
+                  {['dev', 'staging', 'prod'].map((env) => (
+                    <label key={env} className={toggleClass(environment === env) + ' capitalize'}>
+                      <input
+                        type="radio"
+                        value={env}
+                        checked={environment === env}
+                        onChange={(e) => setEnvironment(e.target.value)}
+                        className="hidden"
+                      />
+                      {env}
+                    </label>
+                  ))}
+                </div>
+              </div>
 
               {/* Info banner about manual login */}
               {!editingId && (
@@ -589,11 +590,7 @@ const Projects = () => {
                   }
                 >
                   {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-                  {saving
-                    ? 'Saving...'
-                    : editingId
-                    ? 'Update Project'
-                    : 'Create Project'}
+                  {saving ? 'Saving...' : editingId ? 'Update Project' : 'Create Project'}
                 </button>
               </div>
             </form>

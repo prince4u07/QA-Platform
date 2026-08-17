@@ -1,0 +1,450 @@
+<title>QA Platform CI Pipeline</title>
+<style>
+  /* Same visual system as the 5.3 submission doc so docs/ reads as one set:
+     true black ground, white primary text, mono for anything that is data. */
+  :root {
+    --ground:  #000000;
+    --panel:   #0a0c0e;
+    --line:    #1e2226;
+    --line-lo: #131719;
+    --text:    #ffffff;
+    --muted:   #8a929b;
+    --dim:     #5c646d;
+    --pass:    #3fb950;
+    --warn:    #d29922;
+    --stop:    #f85149;
+
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+
+  header { padding: 64px 0 0; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--pass); margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(2rem, 5vw, 2.6rem); font-weight: 700; letter-spacing: -0.025em;
+    line-height: 1.1; text-wrap: balance; margin: 0 0 16px;
+  }
+  .sub { color: var(--muted); max-width: 66ch; margin: 0; }
+
+  .figures {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 40px 0 8px;
+  }
+  .fig { background: var(--ground); padding: 18px; }
+  .fig .n {
+    font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 27px;
+    font-weight: 600; line-height: 1; letter-spacing: -0.02em; display: block;
+  }
+  .fig .n.ok { color: var(--pass); }
+  .fig .l {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--dim); margin-top: 9px; display: block;
+  }
+  .stamp { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin: 0 0 52px; }
+
+  section { margin: 0 0 44px; }
+  h2 {
+    font-size: 1.05rem; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 6px;
+    padding-top: 26px; border-top: 1px solid var(--line);
+    display: flex; gap: 12px; align-items: baseline;
+  }
+  h2 .num {
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    color: var(--pass); letter-spacing: 0.04em; flex: none;
+  }
+  h3 {
+    font-size: 14.5px; font-weight: 600; margin: 26px 0 4px;
+    display: flex; gap: 9px; align-items: baseline;
+  }
+  p { margin: 12px 0; max-width: 68ch; color: #e9edf1; }
+
+  strong { font-weight: 600; color: var(--text); }
+  code {
+    font-family: var(--mono); font-size: 0.875em; color: var(--text);
+    background: var(--panel); border: 1px solid var(--line-lo); padding: 1px 5px;
+  }
+
+  pre {
+    font-family: var(--mono); font-size: 12.5px; background: var(--panel);
+    border: 1px solid var(--line); padding: 14px 16px; overflow-x: auto;
+    margin: 14px 0; line-height: 1.6;
+  }
+  pre .c { color: var(--dim); }
+  pre .g { color: var(--pass); }
+  pre .k { color: #a5d6ff; }
+
+  .scroll { overflow-x: auto; margin: 16px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 480px; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line-lo); vertical-align: top; }
+  th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--dim); font-weight: 500; border-bottom: 1px solid var(--line); padding-top: 0;
+  }
+  td.n, th.n {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    text-align: right; padding-right: 22px; white-space: nowrap;
+  }
+  td.best { color: var(--pass); }
+  td.bad { color: var(--warn); }
+  tr:last-child td { border-bottom: none; }
+
+  .rule {
+    border-left: 2px solid var(--line); padding: 2px 0 2px 16px; margin: 18px 0;
+  }
+  .rule.stop { border-left-color: var(--stop); }
+  .rule.do { border-left-color: var(--pass); }
+  .rule .tag {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; display: block; margin-bottom: 3px;
+  }
+  .rule.stop .tag { color: var(--stop); }
+  .rule.do .tag { color: var(--pass); }
+  .rule p { margin: 0; font-size: 13.5px; }
+
+  ul { padding-left: 20px; max-width: 68ch; }
+  li { margin-bottom: 8px; }
+  li::marker { color: var(--dim); }
+  ul.warn li::marker { color: var(--warn); }
+
+  .callout {
+    border: 1px solid var(--line); background: var(--panel);
+    padding: 16px 18px; margin: 20px 0;
+  }
+  .callout h3 { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  footer {
+    border-top: 1px solid var(--line); padding-top: 20px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--dim); line-height: 1.7;
+  }
+  a { color: var(--pass); }
+  a:focus-visible { outline: 2px solid var(--pass); outline-offset: 2px; }
+
+  @media (max-width: 560px) {
+    body { padding: 0 18px 64px; font-size: 14.5px; }
+    header { padding-top: 44px; }
+  }
+  @media print {
+    :root {
+      --ground:#fff; --panel:#f6f7f8; --line:#c8ccd0; --line-lo:#e3e6e8;
+      --text:#000; --muted:#3d4348; --dim:#5c646d; --pass:#1a7f37; --stop:#b62324;
+    }
+    body { padding: 0; font-size: 10.5pt; }
+    .fig, .figures { background: #fff; }
+    p { color: #000; }
+    section { break-inside: avoid; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">QA Platform &middot; Engineering guide</p>
+    <h1>CI Test Pipeline</h1>
+    <p class="sub">Running the full suite on every push, blocking deploys on failure, inside a five
+    minute budget. Every number below was measured on this repository, not estimated.</p>
+  </header>
+
+  <div class="figures">
+    <div class="fig"><span class="n ok">11s</span><span class="l">Suite, 8 workers</span></div>
+    <div class="fig"><span class="n">122</span><span class="l">Tests</span></div>
+    <div class="fig"><span class="n ok">0</span><span class="l">Flakes in 5 runs</span></div>
+    <div class="fig"><span class="n">4%</span><span class="l">Of your budget</span></div>
+  </div>
+  <p class="stamp">Measured 15 August 2026 &middot; 12-core Windows host &middot; Python 3.13 &middot; pytest 9.0.3 + xdist 3.8</p>
+
+  <section>
+    <div class="callout">
+      <h3>Read this first: your tests are not the problem</h3>
+      <p>The full suite runs in <strong>11 seconds</strong> on 8 workers. Your budget is 300. The tests
+      consume 4% of it, and I could not make them flake in five consecutive parallel runs, which is 610
+      test executions without a single false failure.</p>
+      <p>So the five minute target will not be won or lost in your test code. It will be won or lost in
+      <strong>environment setup</strong>, because Chromium alone is a 111 MB download. Get the caching
+      right and you finish in about a minute. Get it wrong and you will blow the budget every push
+      while your tests sit there taking eleven seconds.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">0</span> The blocking prerequisite</h2>
+    <p><strong>This project is not a git repository.</strong> There is no <code>.git</code> directory,
+    so there is nothing to push and nothing to trigger on. No amount of pipeline design matters until
+    that is fixed. It is also the reason the "false pipeline results" you described cannot be happening
+    yet: there is no pipeline.</p>
+<pre><span class="c"># from the project root</span>
+git init
+git add .
+git commit -m "Initial commit"</pre>
+    <p>Before that first commit, check what you are about to publish. <code>backend/.env</code>
+    contains your database password and your Anthropic API key, and there is currently no
+    <code>.gitignore</code>. Both virtualenv folders, <code>node_modules</code>, and roughly 9,500
+    evidence screenshots would also be committed.</p>
+<pre><span class="c"># .gitignore, before the first commit</span>
+.env
+.venv/
+venv/
+node_modules/
+__pycache__/
+.pytest_cache/
+backend/logs/
+backend/static/uploads/
+frontend/dist/</pre>
+  </section>
+
+  <section>
+    <h2><span class="num">1</span> CI pipeline integration</h2>
+    <p>Two jobs, not one. A fast gate that fails within seconds on the obvious, and the full suite
+    behind it. Developers get a verdict on a typo long before the browsers have finished starting.</p>
+
+    <h3>Where the time actually goes</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Stage</th><th class="n">Cold</th><th class="n">Cached</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Checkout</td><td class="n">~3s</td><td class="n">~3s</td><td></td></tr>
+          <tr><td>Python + dependencies</td><td class="n">~25s</td><td class="n">~5s</td><td>uv, cache keyed on requirements.txt</td></tr>
+          <tr><td>Chromium download</td><td class="n">~45s</td><td class="n">~2s</td><td>111 MB, cache keyed on the Playwright version</td></tr>
+          <tr><td>Test run, 4 workers</td><td class="n">~16s</td><td class="n">~16s</td><td>Slower than your 11s: CI runners have 4 cores, not 12</td></tr>
+          <tr><td><strong>Total</strong></td><td class="n">~90s</td><td class="n best">~26s</td><td>Both well inside the budget</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The workflow</h3>
+<pre><span class="k">name:</span> CI
+<span class="k">on:</span> [push, pull_request]
+
+<span class="k">jobs:</span>
+  <span class="k">fast-gate:</span>              <span class="c"># fails in seconds on lint or a broken import</span>
+    <span class="k">runs-on:</span> ubuntu-latest
+    <span class="k">steps:</span>
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        <span class="k">with:</span> { enable-cache: true }
+      - <span class="k">run:</span> uv pip install --system -r backend/requirements.txt
+      - <span class="k">name:</span> Unit tests only
+        <span class="k">run:</span> pytest -m "not browser" -q
+        <span class="k">working-directory:</span> backend
+
+  <span class="k">full-suite:</span>
+    <span class="k">needs:</span> fast-gate
+    <span class="k">runs-on:</span> ubuntu-latest
+    <span class="k">steps:</span>
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        <span class="k">with:</span> { enable-cache: true }
+      - <span class="k">run:</span> uv pip install --system -r backend/requirements.txt
+
+      - <span class="k">name:</span> Cache Chromium          <span class="c"># the single biggest win</span>
+        uses: actions/cache@v4
+        <span class="k">with:</span>
+          <span class="k">path:</span> ~/.cache/ms-playwright
+          <span class="k">key:</span> pw-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
+      - <span class="k">run:</span> playwright install --with-deps chromium
+
+      - <span class="k">name:</span> Full suite
+        <span class="k">run:</span> pytest -n 4 -q
+        <span class="k">working-directory:</span> backend</pre>
+
+    <div class="rule do">
+      <span class="tag">Do</span>
+      <p>Key the browser cache on the Playwright version, which is pinned in
+      <code>requirements.txt</code>. Keying it on the lockfile alone means every unrelated dependency
+      bump re-downloads 111 MB.</p>
+    </div>
+    <div class="rule stop">
+      <span class="tag">Never</span>
+      <p>Do not add a MySQL service container. Your suite does not touch the database. This was
+      confirmed by running the whole suite green while the MySQL service was stopped, on 13 August,
+      when it stood at 112 tests. Adding a database service would cost 15 to 20 seconds per run to
+      serve no test at all.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">2</span> Flake mitigation</h2>
+    <p>You asked for zero false failures. That is achievable and you are close to it already. Five
+    consecutive 8-worker runs produced 610 test executions and zero failures.</p>
+
+    <h3>Fixed sleeps are the enemy, and you still have five</h3>
+    <p>A <code>time.sleep()</code> is a bet that the machine will be fast enough. On a loaded CI runner
+    it loses, and the test fails for reasons that have nothing to do with your code. That is precisely
+    the false failure you want to eliminate.</p>
+    <p>Two were removed today by making the values configurable rather than hardcoded, which cut the
+    suite from 37s to 30s serial before parallelism was even applied:</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>What was hardcoded</th><th class="n">Before</th><th class="n">After</th><th>Fix</th></tr></thead>
+        <tbody>
+          <tr><td>Step timeout, 8s, waiting to prove a step fails</td><td class="n">8.79s</td><td class="n best">2.30s</td><td><code>QA_STEP_TIMEOUT_MS</code></td></tr>
+          <tr><td>Manual watch poll, 1.5s per loop</td><td class="n">10.49s</td><td class="n best">4.72s</td><td><code>WATCH_POLL_SECS</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Five fixed sleeps remain in the crawler and manual runner.</strong> Each one is a
+    latent false failure. The rule that replaces them: wait for a condition, never for a duration.</p>
+    <div class="rule stop">
+      <span class="tag">Never</span>
+      <p><code>time.sleep(1.5)</code> then assume the page is ready.</p>
+    </div>
+    <div class="rule do">
+      <span class="tag">Instead</span>
+      <p><code>locator.wait_for(state='visible', timeout=...)</code>, which returns the instant the
+      condition is true and fails loudly with a real reason when it never becomes true.</p>
+    </div>
+
+    <h3>Network isolation, already solved</h3>
+    <p>Your browser tests start a disposable HTTP server inside the test on port 0 and point Chromium
+    at it. That is a better answer than mocking: nothing is faked, but nothing external is depended on
+    either. It is the reason the suite does not flake.</p>
+    <div class="rule stop">
+      <span class="tag">Rule</span>
+      <p>No test may contact a real website. The moment one does, your pipeline's reliability becomes
+      that site's uptime. Enforce it in review; a test that needs the internet belongs in a separate,
+      non-blocking job.</p>
+    </div>
+
+    <h3>Database isolation, for when you need it</h3>
+    <p>You do not need this yet, but when tests start touching MySQL: give each test a transaction and
+    roll it back at the end. It is the same technique already used to verify the schema by replaying
+    the application's real SQL and rolling back, which leaves no residue. Shared truncation between
+    tests breaks the moment you parallelise; transactions do not.</p>
+
+    <h3>When a flake does appear</h3>
+    <p>It will eventually. The response matters more than the prevention.</p>
+    <ul class="warn">
+      <li><strong>Do not add a blind retry.</strong> <code>pytest-rerunfailures</code> turns a visible
+      flake into an invisible one. The test still lies, you just stop hearing about it.</li>
+      <li><strong>Quarantine, then fix.</strong> Mark it, move it out of the blocking job, open an
+      issue with the run log. The pipeline stays trustworthy while the flake gets diagnosed.</li>
+      <li><strong>Track the rate.</strong> A flake rate you measure is manageable. One you do not is
+      how teams end up ignoring red builds.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">3</span> Test isolation</h2>
+    <p>You asked about running tests in isolated Docker containers. For this suite that would be the
+    wrong call, and the numbers say so clearly.</p>
+    <div class="callout">
+      <h3>Do not containerise per test</h3>
+      <p>A container start is roughly 1 to 2 seconds. At 122 tests that is <strong>two to four
+      minutes of pure startup</strong>, to replace isolation you already have. Your entire suite
+      currently runs in 11 seconds. Per-test containers would make it fifteen times slower and consume
+      most of your five minute budget doing nothing.</p>
+      <p><strong>One container for the whole job</strong> is the right granularity, and that is exactly
+      what a GitHub Actions runner already gives you.</p>
+    </div>
+
+    <p>Process isolation is already doing the job, and it is doing it for free:</p>
+    <ul>
+      <li><strong>Separate processes per worker.</strong> pytest-xdist gives each worker its own Python
+      process, so module state cannot leak between them.</li>
+      <li><strong>Port 0 for test servers.</strong> The OS assigns a free port, so two workers running
+      browser tests simultaneously never collide.</li>
+      <li><strong>tmp_path for files.</strong> Screenshot and manual run directories are redirected per
+      test, so nothing is written to shared disk.</li>
+    </ul>
+    <p>That combination is why all 122 tests pass on 8 workers with no changes. The proof is the five
+    clean runs, not the theory.</p>
+
+    <h3>What would break it</h3>
+    <p>Two pieces of shared state to keep an eye on as the suite grows. Neither is a problem today
+    because tests use distinct identifiers, but both would bite if that stopped being true:</p>
+    <ul>
+      <li><code>manual_run._active</code>, a module-level dictionary of live sessions keyed by test
+      case id. Two tests using the same id in one process would fight over it.</li>
+      <li>Routes registered on the shared Flask app at import time in <code>test_app.py</code>. Safe
+      across processes, but it means route registration order is not something to depend on.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">4</span> Fast feedback loops</h2>
+    <p>Measured on this repository, same suite, same machine, two runs each.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Configuration</th><th class="n">Time</th><th>Verdict</th></tr></thead>
+        <tbody>
+          <tr><td>Serial, before today's fixes</td><td class="n">36.7s</td><td>Baseline</td></tr>
+          <tr><td>Serial, after timeout fixes</td><td class="n">30.2s</td><td>Same tests, less waiting</td></tr>
+          <tr><td>4 workers</td><td class="n">15.5s</td><td>What a CI runner will see</td></tr>
+          <tr><td><strong>8 workers</strong></td><td class="n best">11.4s</td><td class="best">Best on a 12-core host</td></tr>
+          <tr><td>-n auto, 12 workers</td><td class="n bad">18.2s</td><td class="bad">Worse than 8. Do not use it</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="rule do">
+      <span class="tag">Finding</span>
+      <p><code>-n auto</code> is 60% slower than <code>-n 8</code> on this machine. Each browser test
+      spawns a Chromium process, so at one worker per core the browsers compete with the workers for
+      CPU. Set the worker count explicitly to roughly two thirds of the cores, and re-measure on the
+      runner rather than assuming your laptop's number transfers.</p>
+    </div>
+
+    <h3>Sharding: not yet</h3>
+    <p>Splitting the suite across several CI machines is the standard answer to a slow suite. Yours is
+    11 seconds. Sharding it would add more machine startup time than it saves, and give you several
+    logs to read instead of one. <strong>Revisit when the suite passes about two minutes</strong>, at
+    which point split by the marker below rather than by file count, so each shard has a similar
+    browser workload.</p>
+
+    <h3>The one change worth making now</h3>
+    <p>Mark the browser tests, so the fast gate can skip them and return in about a second.</p>
+<pre><span class="c"># pytest.ini</span>
+markers =
+    browser: needs a real Chromium instance
+
+<span class="c"># and on the browser test modules</span>
+pytestmark = pytest.mark.browser</pre>
+    <p>That splits your 122 tests into roughly 95 that need nothing and 27 that need a browser. A
+    developer who breaks a scoring rule hears about it before Chromium has even started.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">5</span> On "zero false passes"</h2>
+    <p>Zero false failures is a reasonable target and you are effectively there. <strong>Zero false
+    passes is not something any test suite can promise</strong>, and I would be misleading you to say
+    otherwise. A false pass is a bug in an area no test covers, and no suite can prove the absence of
+    those. Green means "nothing I checked is broken", never "nothing is broken".</p>
+    <p>What you can do is shrink the space where a false pass can hide:</p>
+    <ul>
+      <li><strong>The React interface has no unit tests at all.</strong> It is checked by lint and a
+      successful build, which catch a broken import and nothing about behaviour. This is by far the
+      largest blind spot in the project.</li>
+      <li><strong>No test touches MySQL.</strong> Convenient for CI speed, but it means a broken query
+      reaches production. One integration job, allowed to be slower and run on merge rather than every
+      push, would close that.</li>
+      <li><strong>Coverage is not measured.</strong> Adding <code>pytest-cov</code> tells you which
+      branches nothing exercises, which is where false passes live.</li>
+    </ul>
+    <p>Name these in your pipeline documentation rather than implying the green tick covers everything.
+    A team that knows where the gaps are makes better decisions than one that trusts a badge.</p>
+  </section>
+
+  <footer>
+    QA Platform &middot; CI and test reliability guide<br>
+    All timings measured on this repository on 15 August 2026. Nothing is estimated except the CI
+    runner figures in section 1, which are marked as approximate and depend on your runner.
+  </footer>
+
+</div>

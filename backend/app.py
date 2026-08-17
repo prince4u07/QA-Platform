@@ -1,7 +1,8 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_mysqldb import MySQL
+import MySQLdb
 from config import Config
 import logging
 
@@ -40,6 +41,7 @@ from modules.runner.routes import runner_bp, init_runner
 from modules.ai.routes import ai_bp, init_ai
 from modules.reports.routes import reports_bp, init_reports
 from modules.otp.routes import otp_bp, init_otp
+from modules.admin.routes import admin_bp, init_admin
 
 # Initialize modules with MySQL
 init_auth(mysql)
@@ -50,6 +52,7 @@ init_ai(mysql)
 init_bugs(mysql)
 init_reports(mysql)
 init_otp(mysql)
+init_admin(mysql)
 
 # Background job runner for automated crawls (non-blocking /run/<id>/async).
 from modules.runner.jobs import job_manager
@@ -63,17 +66,49 @@ app.register_blueprint(runner_bp, url_prefix='/api/runner')
 app.register_blueprint(reports_bp, url_prefix='/api/reports')
 app.register_blueprint(ai_bp, url_prefix='/api/ai')
 app.register_blueprint(otp_bp, url_prefix='/api/otp')
+app.register_blueprint(admin_bp, url_prefix='/api/admin')
 
-@app.before_request
-def _require_database():
-    # If MySQL failed to initialise at boot, every data endpoint would otherwise
-    # crash with AttributeError on mysql.connection. Convert that into a clean
-    # 503 here. /api/auth/* is exempt: the auth module has its own DB-availability
-    # handling, and OPTIONS preflights must pass through for CORS.
-    if mysql is None and request.method != 'OPTIONS' \
-            and request.path.startswith('/api/') \
-            and not request.path.startswith('/api/auth/'):
-        return jsonify({'error': 'Database unavailable. Please try again later.'}), 503
+
+@jwt.token_in_blocklist_loader
+def reject_deactivated_accounts(_jwt_header, jwt_payload):
+    """
+    Refuse a token whose account has been deactivated or deleted.
+
+    Tokens in this deployment never expire, so without this a deactivated
+    user would keep working indefinitely on the token they already hold.
+    Runs on every authenticated request, which is one primary-key lookup.
+    """
+    identity = jwt_payload.get('sub')
+    if not identity or mysql is None:
+        return False
+    try:
+        cursor = mysql.connection.cursor()
+        cursor.execute("SELECT is_active FROM users WHERE id = %s", (identity,))
+        row = cursor.fetchone()
+        cursor.close()
+    except Exception:
+        # If the database is unreachable, let the request through to the
+        # normal handler, which reports the outage properly. Failing closed
+        # here would report every outage as an authentication problem.
+        return False
+    if row is None:
+        return True                     # account deleted: the token is void
+    return not row.get('is_active', 1)
+
+@app.errorhandler(MySQLdb.OperationalError)
+def handle_database_unavailable(error):
+    """
+    The database being down is an operational problem, not a bug in a request.
+
+    Without this, every single request while MySQL is stopped logged a 20-line
+    traceback and told the user "Internal server error", which says nothing
+    about what is actually wrong or how to fix it. One clear line each instead.
+    """
+    logger.error("Database unavailable: %s", error)
+    return jsonify({
+        'error': 'Cannot reach the database. Is the MySQL service running?',
+        'detail': str(error)[:200],
+    }), 503
 
 
 @app.errorhandler(Exception)
@@ -98,7 +133,6 @@ def handle_rate_limit(error):
         'error': 'Too many requests. Please slow down and try again shortly.',
         'detail': str(error.description),
     }), 429
-
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

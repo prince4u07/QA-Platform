@@ -13,6 +13,7 @@ threads only signal it via events and read its status.
 """
 
 import os
+import re
 import time
 import uuid
 import logging
@@ -26,23 +27,97 @@ logger = logging.getLogger(__name__)
 
 
 MANUAL_RUNS_DIR = os.path.join('static', 'uploads', 'manual_runs')
+MANUAL_DEFAULT_MAX_PAGES = 25       # when the test case does not set a real limit
+MANUAL_MAX_PAGES_CAP = 100
 MAX_DURATION_SECS = 1800            # auto-close window after 30 idle minutes
 SCREENSHOT_DEBOUNCE_SECS = 1.0      # collapse rapid same-page redirects
+AUTO_TRIGGER_STABLE_SECS = 5.0      # off-login URL must hold this long to auto-crawl
+# How often the worker checks whether the tester has navigated. Lower means the
+# page tracker keeps up more closely; it is a named constant so tests can poll
+# fast instead of sleeping through a real-time interval they do not need.
+WATCH_POLL_SECS = 1.5
 
 
 def _looks_like_login(url):
-    """Heuristic: does this URL belong to an unauthenticated login/auth screen?
-    We use the path only so domains like 'authenticnews.com' don't false-positive."""
+    """
+    Does this URL belong to an unauthenticated login/auth screen?
+
+    Delegates to the crawler's copy so both halves of the product agree on
+    what a login page is. Imported lazily because routes.py imports this
+    module at load time.
+    """
+    from modules.runner.routes import looks_like_login
+    return looks_like_login(url)
+
+
+def _settle(page):
+    """
+    Wait for the page to stop changing before screenshotting or auditing it.
+
+    Replaces the fixed sleeps that used to sit here. A flat sleep is a bet on
+    machine speed: too short and the screenshot catches a half-rendered page,
+    too long and every capture pays for the worst case. Shares the crawler's
+    implementation so both halves settle identically.
+    """
+    from modules.runner.routes import wait_for_page_settled
+    return wait_for_page_settled(page)
+
+
+# What a manual tester is actually looking for. These are the judgement calls
+# no automated check can make, which is why a human is doing this at all.
+ISSUE_CATEGORIES = {
+    'layout': 'Layout flaw',
+    'design': 'Poor design',
+    'functional': 'Functional error',
+    'content': 'Wrong or missing content',
+    'business': 'Does not match the business requirement',
+    'broken-link': 'Broken link',
+    'other': 'Other',
+}
+ISSUE_SEVERITIES = ('critical', 'serious', 'moderate', 'minor')
+
+_STEP_NUMBERING = re.compile(r'^\s*\d+\s*[.)\]-]\s*')
+
+
+def resolve_manual_page_limit(stored):
+    """
+    How many pages one manual run may crawl.
+
+    A stored limit of 0 or 1 is treated as "not set" rather than obeyed. The
+    test-case form saved max_pages=1 for every manual test case back when
+    manual runs could not crawl at all, and the landing page is captured
+    before auto-crawl begins, so a limit of 1 made the crawl loop exit
+    immediately and a manual run only ever recorded the page it opened on.
+    """
     try:
-        path = (urlparse(url).path or '').lower()
-    except Exception:
-        return False
-    if not path or path == '/':
-        return False
-    return any(kw in path for kw in (
-        'login', 'signin', 'sign-in', 'sign_in',
-        '/auth', 'register', 'forgot', 'password',
-    ))
+        value = int(stored or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 1:
+        return MANUAL_DEFAULT_MAX_PAGES
+    return min(value, MANUAL_MAX_PAGES_CAP)
+
+
+def _checklist_from(steps_text):
+    """
+    Turn the test case's Steps into a checklist the tester ticks off.
+
+    Numbering is stripped because the UI numbers them itself, and blank lines
+    are dropped so an empty line never becomes a step nobody can complete.
+    """
+    items = []
+    for line in (steps_text or '').splitlines():
+        text = _STEP_NUMBERING.sub('', line).strip()
+        if not text:
+            continue
+        items.append({
+            'index': len(items),
+            'text': text,
+            'status': 'pending',    # pending | passed | failed | skipped
+            'note': '',
+            'screenshot': '',
+        })
+    return items
 
 
 # testcase_id (int) -> _ManualSession
@@ -53,11 +128,12 @@ _lock = threading.Lock()
 class _ManualSession:
     """Owns one headed Chromium window on its own thread until the user clicks Done."""
 
-    def __init__(self, testcase_id, project_id, base_url, max_pages=25):
+    def __init__(self, testcase_id, project_id, base_url, max_pages=25,
+                 steps_text='', expected_result=''):
         self.testcase_id = testcase_id
         self.project_id = project_id
         self.base_url = base_url
-        self.max_pages = max(1, min(int(max_pages or 25), 100))
+        self.max_pages = resolve_manual_page_limit(max_pages)
         self.run_id = uuid.uuid4().hex
         self.run_dir = os.path.join(MANUAL_RUNS_DIR, self.run_id)
 
@@ -70,8 +146,22 @@ class _ManualSession:
         self.finished_at = None
 
         # Live snapshot for the UI to poll.
-        self.pages = []             # [{url, screenshot, captured_at, source, findings, issues_count, health}]
-        self._console = []          # console errors/warnings for the current page
+        self.pages = []             # [{url, screenshot, captured_at, source: 'manual'|'auto'}]
+
+        # The test case's written steps, as a checklist the tester works
+        # through. This is what makes Steps worth writing for a manual test.
+        self.steps = _checklist_from(steps_text)
+        self.expected_result = (expected_result or '').strip()
+        self.expected_met = None    # True | False, answered at the end
+
+        # Issues the tester reported while testing: the layout flaws, poor
+        # design and business-logic mismatches a machine cannot judge.
+        self.reported = []
+
+        # Issues found automatically on the pages the tester walked through,
+        # so broken links and accessibility faults are caught for them.
+        self.auto_findings = []
+        self.auto_checked_pages = 0
 
         self._action_event = threading.Event()
         self._autocrawl_event = threading.Event()
@@ -86,6 +176,9 @@ class _ManualSession:
     # ---- snapshot for the API ----
     def snapshot(self):
         with self._lock:
+            steps = [dict(s) for s in self.steps]
+            done = sum(1 for s in steps if s['status'] != 'pending')
+            failed = sum(1 for s in steps if s['status'] == 'failed')
             return {
                 'run_id': self.run_id,
                 'testcase_id': self.testcase_id,
@@ -98,7 +191,68 @@ class _ManualSession:
                 'error': self.error,
                 'started_at': self.started_at.isoformat(),
                 'finished_at': self.finished_at.isoformat() if self.finished_at else None,
+                # --- tester workspace ---
+                'steps': steps,
+                'steps_total': len(steps),
+                'steps_done': done,
+                'steps_failed': failed,
+                'expected_result': self.expected_result,
+                'expected_met': self.expected_met,
+                'reported': list(self.reported),
+                'reported_count': len(self.reported),
+                'auto_findings_count': len(self.auto_findings),
+                'auto_checked_pages': self.auto_checked_pages,
+                'issue_categories': ISSUE_CATEGORIES,
             }
+
+    # ---- tester actions (called from Flask request threads) ----
+    def mark_step(self, index, status, note=''):
+        """Tick one checklist item off. Returns True if the index existed."""
+        if status not in ('pending', 'passed', 'failed', 'skipped'):
+            return False
+        with self._lock:
+            if index < 0 or index >= len(self.steps):
+                return False
+            self.steps[index]['status'] = status
+            self.steps[index]['note'] = (note or '')[:500]
+            # Pin the most recent page to the step, so a failed step points at
+            # the screen it failed on rather than at nothing.
+            if self.pages:
+                self.steps[index]['screenshot'] = self.pages[-1]['screenshot']
+        return True
+
+    def report_issue(self, category, severity, title, note='', step_index=None):
+        """
+        Record something the tester spotted, against the page they are on.
+
+        This is the part a crawler cannot do: judging that a layout is broken,
+        a design is confusing, or the behaviour does not match what the
+        business asked for.
+        """
+        title = (title or '').strip()
+        if not title:
+            return None
+        with self._lock:
+            page = self.pages[-1] if self.pages else {}
+            entry = {
+                'index': len(self.reported),
+                'category': category if category in ISSUE_CATEGORIES else 'other',
+                'severity': severity if severity in ISSUE_SEVERITIES else 'moderate',
+                'title': title[:255],
+                'note': (note or '')[:2000],
+                'page_url': page.get('url', self.base_url),
+                'screenshot': page.get('screenshot', ''),
+                'step_index': step_index,
+                'reported_at': datetime.utcnow().isoformat(),
+                'source': 'tester',
+            }
+            self.reported.append(entry)
+        logger.info("manual-run %s: tester reported %s (%s)",
+                    self.run_id, entry['title'], entry['severity'])
+        return entry
+
+    def set_expected_met(self, met):
+        self.expected_met = bool(met)
 
     # ---- worker thread ----
     def _run(self):
@@ -127,11 +281,6 @@ class _ManualSession:
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                 )
                 page = context.new_page()
-                # Capture console errors/warnings so each page's QA checks can
-                # report JS exceptions / failed resources, same as the automated run.
-                page.on('console', lambda msg:
-                    self._console.append({'type': msg.type, 'text': msg.text})
-                    if msg.type in ('error', 'warning') else None)
 
                 try:
                     page.goto(self.base_url, timeout=60000, wait_until='commit')
@@ -143,7 +292,7 @@ class _ManualSession:
                     page.wait_for_load_state('domcontentloaded', timeout=10000)
                 except Exception:
                     pass
-                time.sleep(1.0)
+                _settle(page)
                 self._capture(page)
 
                 try:
@@ -157,23 +306,20 @@ class _ManualSession:
                 # Phase 1: manual navigation. Poll page.url for changes — works
                 # for both real navigations AND SPA route changes (which don't
                 # fire framenavigated). The polling also pumps the Playwright
-                # event loop so we notice if the user closes the window. Every
-                # page the user visits is screenshotted.
+                # event loop so we notice if the user closes the window.
                 #
-                # The crawl does NOT start on a timer. It begins ONLY when the
-                # user explicitly clicks "I'm logged in — start crawl" (which the
-                # /autocrawl endpoint turns into _autocrawl_event). A timer was
-                # removed because the start URL often isn't recognisable as a login
-                # page, so it could begin crawling BEFORE the user logged in —
-                # testing the public site instead of the authenticated app.
+                # Auto-trigger: once the URL is OFF the login page and has stayed
+                # stable for AUTO_TRIGGER_STABLE_SECS, fire the autocrawl signal
+                # automatically — no button needed.
                 #
-                # Exits on: Done/Cancel, autocrawl signal (the button), browser
-                # closed, timeout.
+                # Exits on: Done/Cancel, autocrawl signal (manual or auto),
+                # browser closed, timeout.
                 deadline = time.time() + MAX_DURATION_SECS
+                stable_since = time.time()
                 while (not self._action_event.is_set()
                        and not self._autocrawl_event.is_set()
                        and time.time() < deadline):
-                    time.sleep(1.5)
+                    time.sleep(WATCH_POLL_SECS)
                     try:
                         current_url = page.url
                     except Exception as e:
@@ -184,9 +330,17 @@ class _ManualSession:
                             page.wait_for_load_state('domcontentloaded', timeout=3000)
                         except Exception:
                             pass
-                        time.sleep(0.5)
+                        _settle(page)
                         self._capture(page)
                         last_url = current_url
+                        stable_since = time.time()       # active navigation resets
+
+                    if (not _looks_like_login(current_url)
+                            and (time.time() - stable_since) >= AUTO_TRIGGER_STABLE_SECS):
+                        logger.info("manual-run %s: auto-trigger — '%s' stable for %.1fs",
+                                    self.run_id, current_url, AUTO_TRIGGER_STABLE_SECS)
+                        self._autocrawl_event.set()
+                        break
 
                 # Phase 2 (optional): user signalled "auto-crawl from here". BFS
                 # through internal links of the page they're currently on (already
@@ -244,53 +398,74 @@ class _ManualSession:
                 'screenshot': f'/static/uploads/manual_runs/{self.run_id}/{filename}',
                 'captured_at': datetime.utcnow().isoformat(),
                 'source': source,
+                'auto_issues': 0,
             }
             with self._lock:
                 self.pages.append(entry)
             logger.info("manual-run %s: captured page %d (%s) [%s]",
                         self.run_id, idx, url, source)
-            # Run the same QA checks the automated crawl runs, so the user gets a
-            # real report for the authenticated pages they walk — not just shots.
-            self._run_page_checks(page, url, entry)
+
+            # Run the machine checks on the page the tester is looking at, so
+            # broken links and accessibility faults are caught for them while
+            # they concentrate on the judgement calls only a human can make.
+            # While they are browsing we run only the fast in-page checks, so
+            # the tracker keeps up with them; the link check, which fires
+            # dozens of HTTP requests, waits for the auto-crawl phase.
+            found = self._auto_check(page, url, deep=(source == 'auto'))
+            if found:
+                with self._lock:
+                    entry['auto_issues'] = found
         except Exception as e:
             logger.warning("manual-run screenshot failed: %s", e)
 
-    def _run_page_checks(self, page, url, entry):
-        """Run the page-level QA checks on the currently-loaded page and attach
-        the findings to its capture entry. Best-effort: a check failure must never
-        break the manual run."""
+    def _auto_check(self, page, url, deep=False):
+        """
+        Audit one page the tester visited. Returns how many issues were found.
+
+        Only the checks that are meaningful here are run:
+
+        - Security headers are skipped. A manual session has no response
+          headers to inspect, and running the check with none would report
+          every security header as missing on every page, which is false.
+        - Mobile checks are skipped. The tester's window is a desktop one,
+          where every normal control looks like an undersized tap target.
+        - Link checking only runs on `deep` (auto-crawl) pages, because it
+          fires up to 30 HTTP requests and would stall the live tracker.
+
+        Best-effort throughout: a failure here must never interrupt the
+        tester's session, so everything is caught and logged.
+        """
+        # Imported here to avoid a circular import at module load.
+        from modules.runner.routes import (
+            check_missing_alt, check_seo, check_accessibility, check_broken_links,
+        )
+
+        findings = {}
         try:
-            from modules.runner.routes import (
-                check_broken_links, check_missing_alt, check_seo, check_security,
-                check_accessibility, filter_console_errors, calculate_health_score,
-            )
-        except Exception:
-            return
-        console = list(self._console)
-        self._console.clear()          # attribute console output per page
-        try:
-            findings = {
-                'broken_links': check_broken_links(page, url),
-                'missing_alt_images': check_missing_alt(page),
-                'seo_issues': check_seo(page, url),
-                # response headers aren't captured in a hand-driven run -> None,
-                # which tells check_security to skip header-presence checks.
-                'security_issues': check_security(url, None, page=page,
-                                                  console_messages=console),
-                'accessibility_issues': check_accessibility(page),
-                'mobile_issues': [],   # manual run is a desktop window
-                'console_errors': filter_console_errors(console, base_url=url),
-            }
+            findings['missing_alt_images'] = check_missing_alt(page)
+            findings['seo_issues'] = check_seo(page, url)
+            findings['accessibility_issues'], _engine = check_accessibility(page)
+            if deep:
+                findings['broken_links'], _cov = check_broken_links(page, url)
         except Exception as e:
-            logger.warning("manual-run page checks failed (%s): %s", url, e)
-            return
-        issues = sum(len(v) for v in findings.values() if isinstance(v, list))
-        health = calculate_health_score(findings)
+            logger.warning("manual-run auto-check failed on %s: %s", url, e)
+            return 0
+
+        count = 0
         with self._lock:
-            entry['findings'] = findings
-            entry['issues_count'] = issues
-            entry['health'] = health
-        logger.info("manual-run %s: %s -> %d issues, health %d", self.run_id, url, issues, health)
+            for category, items in findings.items():
+                for item in items or []:
+                    if isinstance(item, dict):
+                        item['category'] = category
+                        item['page_url'] = url
+                        item['source'] = 'automatic'
+                    self.auto_findings.append(item)
+                    count += 1
+            self.auto_checked_pages += 1
+        if count:
+            logger.info("manual-run %s: %d automatic issue(s) on %s",
+                        self.run_id, count, url)
+        return count
 
     def _auto_crawl(self, page):
         """Walk the site BFS-style starting from the page's current URL,
@@ -338,7 +513,7 @@ class _ManualSession:
                     page.wait_for_load_state('networkidle', timeout=5000)
                 except Exception:
                     pass
-                time.sleep(0.6)
+                _settle(page)
             except Exception as e:
                 logger.warning("manual auto-crawl navigate failed (%s): %s", url, e)
                 continue
@@ -360,93 +535,8 @@ class _ManualSession:
                     to_visit.append(clean)
             visited.add(url)
 
-        # Button/JS menus (encrypted SPA navs like DigiELV) expose NO <a href>, so
-        # the href crawl above can't reach them. Do a bounded click sweep of the
-        # nav/menu items to reach those authenticated pages too.
-        try:
-            self._click_crawl_menus(page, seed)
-        except Exception as e:
-            logger.warning("manual auto-crawl click sweep failed: %s", e)
-
         logger.info("manual-run %s: auto-crawl finished (%d pages total)",
                     self.run_id, len(self.pages))
-
-    # Selector for nav/menu-ish clickable items (covers React/Angular sidebars).
-    _NAV_SEL = ("nav a, nav button, aside a, aside button, header a, header button, "
-                "[role=menuitem], [role=link], [class*=menu] a, [class*=menu] button, "
-                "[class*=sidebar] a, [class*=sidebar] button, [class*=nav] a, [class*=nav] button")
-
-    def _click_crawl_menus(self, page, seed):
-        """Click nav/menu items that aren't plain <a href> (JS router buttons) and
-        capture wherever each lands. Bounded, same-origin only, never clicks logout.
-        After each click we return to `seed` so the menu is present for the next."""
-        from urllib.parse import urlparse
-        base_host = (urlparse(seed).netloc or '').lower()
-        try:
-            labels = page.evaluate(
-                """(sel) => {
-                    const seen = new Set(); const out = [];
-                    document.querySelectorAll(sel).forEach(el => {
-                        const t = (el.innerText || '').trim();
-                        if (t && t.length <= 40 && !seen.has(t)
-                            && !/log\\s*out|sign\\s*out|logout/i.test(t)) {
-                            seen.add(t); out.push(t);
-                        }
-                    });
-                    return out.slice(0, 60);
-                }""", self._NAV_SEL) or []
-        except Exception:
-            labels = []
-
-        for label in labels:
-            if len(self.pages) >= self.max_pages or self._action_event.is_set():
-                break
-            visited = {p['url'].rstrip('/').split('#')[0] for p in self.pages}
-            try:
-                before = page.url
-            except Exception:
-                before = seed
-            try:
-                clicked = page.evaluate(
-                    """(args) => {
-                        const [sel, label] = args;
-                        for (const el of document.querySelectorAll(sel)) {
-                            if ((el.innerText || '').trim() === label) {
-                                try { el.scrollIntoView({block: 'center'}); } catch (e) {}
-                                el.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    }""", [self._NAV_SEL, label])
-            except Exception:
-                clicked = False
-            if not clicked:
-                continue
-            try:
-                page.wait_for_load_state('networkidle', timeout=4000)
-            except Exception:
-                pass
-            time.sleep(0.6)
-            try:
-                cur = page.url
-            except Exception:
-                cur = before
-            cur_clean = cur.rstrip('/').split('#')[0]
-            same_site = (urlparse(cur).netloc or '').lower() == base_host
-            if same_site and cur_clean not in visited:
-                self._capture(page, source='auto')      # screenshot + full checks
-            # Return to the seed page so the menu is available for the next click.
-            if cur_clean != seed.rstrip('/').split('#')[0]:
-                try:
-                    page.go_back()
-                    page.wait_for_load_state('networkidle', timeout=4000)
-                    time.sleep(0.4)
-                    if page.url.rstrip('/').split('#')[0] != seed.rstrip('/').split('#')[0]:
-                        page.goto(seed, timeout=15000, wait_until='domcontentloaded')
-                        time.sleep(0.4)
-                except Exception:
-                    pass
 
     # ---- control ----
     def start(self):
@@ -473,7 +563,50 @@ class _ManualSession:
 # Public API used by routes
 # ============================================================
 
-def start(testcase_id, project_id, base_url, max_pages=25):
+def summarise_manual(session_snapshot):
+    """
+    A verdict for a manual run, in the tester's terms.
+
+    A manual run is not judged by a crawler's issue count; it is judged by
+    whether the tester could complete the steps and whether what they saw
+    matched what the business asked for.
+    """
+    steps = session_snapshot.get('steps') or []
+    reported = session_snapshot.get('reported') or []
+    failed_steps = [s for s in steps if s['status'] == 'failed']
+    pending = [s for s in steps if s['status'] == 'pending']
+
+    by_severity = {sev: 0 for sev in ISSUE_SEVERITIES}
+    for issue in reported:
+        by_severity[issue.get('severity', 'moderate')] = \
+            by_severity.get(issue.get('severity', 'moderate'), 0) + 1
+
+    expected_met = session_snapshot.get('expected_met')
+    parts = []
+    if steps:
+        parts.append(f'{len(steps) - len(pending)} of {len(steps)} steps checked')
+    if failed_steps:
+        parts.append(f'{len(failed_steps)} step(s) failed')
+    if reported:
+        parts.append(f'{len(reported)} issue(s) reported')
+    if expected_met is False:
+        parts.append('expected result NOT met')
+    summary = ', '.join(parts) if parts else 'Nothing was recorded for this run.'
+
+    return {
+        'steps_total': len(steps),
+        'steps_failed': len(failed_steps),
+        'steps_pending': len(pending),
+        'reported_total': len(reported),
+        'reported_by_severity': by_severity,
+        'auto_findings_total': session_snapshot.get('auto_findings_count', 0),
+        'expected_met': expected_met,
+        'summary': summary[:1] .upper() + summary[1:] if summary else summary,
+    }
+
+
+def start(testcase_id, project_id, base_url, max_pages=25,
+          steps_text='', expected_result=''):
     """Open the headed window for a manual run. Returns (ok, message, snapshot)."""
     if not base_url:
         return False, 'Project has no base URL to open', None
@@ -482,7 +615,8 @@ def start(testcase_id, project_id, base_url, max_pages=25):
         existing = _active.get(testcase_id)
         if existing and existing.is_alive():
             existing.signal_cancel()
-        sess = _ManualSession(testcase_id, project_id, base_url, max_pages=max_pages)
+        sess = _ManualSession(testcase_id, project_id, base_url, max_pages=max_pages,
+                              steps_text=steps_text, expected_result=expected_result)
         _active[testcase_id] = sess
 
     sess.start()
@@ -492,9 +626,8 @@ def start(testcase_id, project_id, base_url, max_pages=25):
     while time.time() < deadline:
         if sess.status in ('ready', 'error'):
             break
-        if sess.done_event.is_set():
+        if sess.done_event.wait(0.1):
             break
-        time.sleep(0.1)
 
     if sess.status == 'error':
         with _lock:
@@ -504,13 +637,22 @@ def start(testcase_id, project_id, base_url, max_pages=25):
     return True, 'Manual run started — navigate the site, then click Done.', sess.snapshot()
 
 
-def finish(testcase_id, outcome, note=''):
+def get(testcase_id):
+    """The live session for a test case, or None. Used by the tester actions."""
+    with _lock:
+        sess = _active.get(testcase_id)
+    return sess if sess and sess.is_alive() else None
+
+
+def finish(testcase_id, outcome, note='', expected_met=None):
     """User clicked Done. Blocks until the worker closes. Returns (ok, message, snapshot)."""
     with _lock:
         sess = _active.get(testcase_id)
     if not sess or not sess.is_alive():
         return False, 'No active manual run for this test case.', None
 
+    if expected_met is not None:
+        sess.set_expected_met(expected_met)
     sess.signal_done(outcome, note)
     sess.done_event.wait(timeout=15)
 

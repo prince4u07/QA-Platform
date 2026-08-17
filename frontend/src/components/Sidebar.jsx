@@ -9,6 +9,7 @@ import {
   BarChart3,
   LogOut,
   ShieldCheck,
+  Shield,
 } from 'lucide-react';
 
 const navItems = [
@@ -20,10 +21,16 @@ const navItems = [
   { path: '/reports', icon: BarChart3, label: 'Reports' },
 ];
 
+// Shown only to administrators. This hides the link, it does not protect the
+// data: the server checks the role against the database on every admin
+// request, so typing the URL directly still returns 403.
+const adminNavItem = { path: '/admin', icon: Shield, label: 'Administration' };
+
 const Sidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const links = user.role === 'admin' ? [...navItems, adminNavItem] : navItems;
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -64,7 +71,7 @@ const Sidebar = () => {
       {/* Navigation */}
       <nav className="flex-1 p-3">
         <ul className="space-y-1">
-          {navItems.map((item) => {
+          {links.map((item) => {
             const Icon = item.icon;
             const active = location.pathname === item.path;
             return (

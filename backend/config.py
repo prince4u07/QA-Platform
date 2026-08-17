@@ -16,6 +16,11 @@ class Config:
     JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'fallback-secret')
     JWT_ACCESS_TOKEN_EXPIRES = False  # tokens don't expire (for dev)
 
+    # The one account that gets admin rights, matched on the email used to
+    # register. Roles are never accepted from a request body: that would let
+    # anyone create themselves an admin through the public signup form.
+    ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', '').strip().lower()
+
     # File uploads
     UPLOAD_FOLDER = 'static/uploads'
     MAX_CONTENT_LENGTH = 200 * 1024 * 1024  # 200MB max file size

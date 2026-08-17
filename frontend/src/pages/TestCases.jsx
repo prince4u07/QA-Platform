@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -6,12 +6,11 @@ import {
   CheckCircle2, XCircle, RotateCcw, Wand2, X, Clock, Gauge,
   Package, Repeat, Link2, Bug, ImageOff, Search, ShieldAlert,
   Accessibility, Smartphone, Camera, Loader2, Inbox, PartyPopper,
-  ChevronDown, ChevronRight, Network, AlertTriangle, MousePointerClick, FormInput, Eye, FileWarning,
+  ChevronDown, ChevronRight, Network, AlertTriangle,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
-import { assetUrl } from '../config';
-import { getAllProjects } from '../api/projects';
+import { getProjects } from '../api/projects';
 import {
   getTestCases,
   createTestCase,
@@ -21,7 +20,7 @@ import {
 } from '../api/testcases';
 import { runTestCaseAsync, getRunJob, cancelRunJob, getTestRuns, getCrawledPages,
   startManualRun, getManualRunStatus, finishManualRun, cancelManualRun,
-  autoCrawlManualRun } from '../api/runner';
+  markManualStep, reportManualIssue } from '../api/runner';
 import { createBugsFromTestRun } from '../api/bugs';
 
 // ---- pure helpers (module scope) ----
@@ -66,28 +65,181 @@ const CATEGORY_META = {
   security_issues: { Icon: ShieldAlert, label: 'Security Issues', tone: 'text-red-300 bg-red-500/15' },
   accessibility_issues: { Icon: Accessibility, label: 'Accessibility Issues', tone: 'text-brand-indigo bg-brand-indigo/15' },
   mobile_issues: { Icon: Smartphone, label: 'Mobile Issues', tone: 'text-brand-sky bg-brand-sky/15' },
-  interaction_issues: { Icon: MousePointerClick, label: 'Functional / Interaction Issues', tone: 'text-orange-300 bg-orange-500/15' },
-  form_issues: { Icon: FormInput, label: 'Form Validation Issues', tone: 'text-yellow-300 bg-yellow-500/15' },
-  visual_issues: { Icon: Eye, label: 'Visual / Design Issues', tone: 'text-fuchsia-300 bg-fuchsia-500/15' },
-  content_issues: { Icon: FileWarning, label: 'Content / Data Issues', tone: 'text-red-300 bg-red-500/15' },
+  performance_issues: { Icon: Gauge, label: 'Performance', tone: 'text-amber-300 bg-amber-500/15' },
+  functional_issues: { Icon: XCircle, label: 'Functional Failures', tone: 'text-red-200 bg-red-500/25' },
 };
 
+// Severity is now graded per finding, not per category, so show it.
 const SEVERITY_TONE = {
-  critical: 'bg-red-500/20 text-red-300 border-red-500/30',
-  major:    'bg-orange-500/20 text-orange-300 border-orange-500/30',
-  minor:    'bg-amber-500/20 text-amber-300 border-amber-500/30',
-  info:     'bg-slate-500/20 text-slate-300 border-slate-500/30',
+  critical: 'text-red-200 bg-red-500/25',
+  serious: 'text-red-300 bg-red-500/15',
+  moderate: 'text-amber-300 bg-amber-500/15',
+  minor: 'text-slate-300 bg-white/10',
 };
 
-// Extract a short, readable page label from a full URL.
-const pageLabel = (url) => {
-  if (!url) return '';
-  try {
-    const u = new URL(url);
-    return u.pathname === '/' ? u.host : (u.pathname + (u.search || ''));
-  } catch {
-    return url;
+// Step-by-step result of the written workflow. This is the answer to "does
+// the feature actually work", which no amount of page auditing can give.
+const STEP_STATUS = {
+  passed: { mark: '✓', tone: 'text-brand-teal', row: 'border-brand-teal/30' },
+  failed: { mark: '✕', tone: 'text-red-300', row: 'border-red-500/40 bg-red-500/5' },
+  skipped: { mark: '–', tone: 'text-slate-500', row: 'border-white/10 opacity-60' },
+  unreadable: { mark: '?', tone: 'text-amber-300', row: 'border-amber-500/30' },
+};
+
+const StepResults = ({ steps, summary }) => {
+  if (!steps || steps.length === 0) return null;
+  const ok = summary && summary.workflow_completed;
+
+  return (
+    <div className="mb-4">
+      <div className={
+        'rounded-xl border p-3 mb-2 ' +
+        (ok ? 'border-brand-teal/30 bg-brand-teal/10' : 'border-red-500/30 bg-red-500/10')
+      }>
+        <p className={'text-sm font-medium ' + (ok ? 'text-brand-teal' : 'text-red-200')}>
+          {summary?.summary}
+        </p>
+        <div className="flex gap-4 mt-1 text-xs text-slate-400">
+          <span>{summary?.passed} passed</span>
+          <span>{summary?.failed} failed</span>
+          {summary?.skipped > 0 && <span>{summary.skipped} skipped</span>}
+          {summary?.unreadable > 0 && <span>{summary.unreadable} not understood</span>}
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        {steps.map((step) => {
+          const meta = STEP_STATUS[step.status] || STEP_STATUS.skipped;
+          return (
+            <div key={step.index}
+              className={'flex gap-2 items-start text-sm border-l-2 pl-2 py-1 ' + meta.row}>
+              <span className={'font-mono flex-shrink-0 ' + meta.tone}>{meta.mark}</span>
+              <span className="text-slate-500 flex-shrink-0 w-5">{step.index + 1}.</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-slate-200 break-words">{step.raw}</div>
+                {step.status !== 'passed' && (
+                  <div className={'text-xs mt-0.5 ' + meta.tone}>{step.message}</div>
+                )}
+                {step.detail && step.status === 'failed' && (
+                  <div className="text-xs text-slate-500 mt-0.5 break-all">{step.detail}</div>
+                )}
+              </div>
+              {step.screenshot && (
+                <a href={step.screenshot} target="_blank" rel="noreferrer"
+                  className="text-xs text-brand-sky hover:underline flex-shrink-0">
+                  view
+                </a>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// What changed since the previous run of this test case. The whole point of
+// running repeatedly is to see movement, so this sits above the raw findings.
+const RegressionPanel = ({ regression }) => {
+  if (!regression) return null;
+
+  if (!regression.has_baseline) {
+    return (
+      <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-slate-400">
+        <span className="font-medium text-slate-200">Baseline run.</span>{' '}
+        {regression.summary}
+      </div>
+    );
   }
+
+  const tone = {
+    regressed: 'border-red-500/30 bg-red-500/10 text-red-200',
+    mixed: 'border-amber-500/30 bg-amber-500/10 text-amber-200',
+    improved: 'border-brand-teal/30 bg-brand-teal/10 text-brand-teal',
+    unchanged: 'border-white/10 bg-white/5 text-slate-300',
+  }[regression.verdict] || 'border-white/10 bg-white/5 text-slate-300';
+
+  const delta = regression.score_change;
+  const deltaLabel = delta === null || delta === undefined ? null
+    : delta > 0 ? `+${delta}` : `${delta}`;
+
+  return (
+    <div className={'mb-4 rounded-xl border p-3 ' + tone}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <span className="text-sm font-medium">{regression.summary}</span>
+        {deltaLabel !== null && (
+          <span className="text-sm font-semibold whitespace-nowrap">
+            score {regression.previous_score} → {regression.current_score} ({deltaLabel})
+          </span>
+        )}
+      </div>
+      <div className="flex gap-4 mt-2 text-xs">
+        <span>{regression.new_count} new</span>
+        <span>{regression.fixed_count} fixed</span>
+        <span>{regression.still_open_count} still open</span>
+      </div>
+    </div>
+  );
+};
+
+// Says out loud what the audit did not cover, so a clean result on a partial
+// check is never mistaken for an all-clear.
+const CoverageNotes = ({ coverage }) => {
+  if (!coverage || !coverage.notes || coverage.notes.length === 0) return null;
+  return (
+    <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+      <p className="text-sm font-medium text-amber-200 flex items-center gap-2">
+        <AlertTriangle className="w-4 h-4" /> Not everything was checked
+      </p>
+      <ul className="mt-1.5 space-y-1">
+        {coverage.notes.map((note, i) => (
+          <li key={i} className="text-xs text-amber-100/80 flex gap-2">
+            <span className="flex-shrink-0">•</span><span>{note}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+// Where the score was actually lost, so the number is explainable.
+const ScoreBreakdown = ({ breakdown }) => {
+  if (!breakdown) return null;
+  const rows = Object.entries(breakdown)
+    .filter(([, d]) => d.issues > 0)
+    .sort((a, b) => a[1].score - b[1].score);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="mb-4">
+      <h3 className="font-semibold text-slate-100 mb-2 text-sm">Where the score was lost</h3>
+      <div className="space-y-1.5">
+        {rows.map(([key, d]) => {
+          const label = (CATEGORY_META[key] || {}).label || key;
+          const sevBits = Object.entries(d.by_severity)
+            .filter(([, n]) => n > 0)
+            .map(([sev, n]) => (
+              <span key={sev} className={'px-1.5 py-0.5 rounded ' + (SEVERITY_TONE[sev] || '')}>
+                {n} {sev}
+              </span>
+            ));
+          return (
+            <div key={key} className="flex items-center gap-3 text-xs">
+              <span className="w-40 flex-shrink-0 text-slate-300 truncate">{label}</span>
+              <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className={'h-full rounded-full ' + (d.score < 50 ? 'bg-red-400' : d.score < 80 ? 'bg-amber-400' : 'bg-brand-teal')}
+                  style={{ width: d.score + '%' }}
+                />
+              </div>
+              <span className="w-12 text-right text-slate-400">{d.score}/100</span>
+              <span className="flex gap-1 flex-wrap">{sevBits}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 };
 
 const IssueCategory = ({ categoryKey, items }) => {
@@ -101,43 +253,13 @@ const IssueCategory = ({ categoryKey, items }) => {
         <span>{label}</span>
         <span className={'text-xs px-2 py-0.5 rounded-full ' + tone}>{items.length}</span>
       </h3>
-      <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-sm max-h-56 overflow-y-auto space-y-1.5">
-        {items.map((item, i) => {
-          const isStr = typeof item === 'string';
-          const text = isStr ? item : (item.display || item.url || item.issue || JSON.stringify(item));
-          const severity = isStr ? null : item.severity;
-          const pageUrl = isStr ? '' : item.page_url;
-          const crop = isStr ? null : item.screenshot_crop;
-          const impact = isStr ? null : item.why;
-          return (
-            <div key={i} className="text-slate-300 break-words">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <span className="text-slate-500 flex-shrink-0">•</span>
-                {severity && (
-                  <span className={'text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border ' + (SEVERITY_TONE[severity] || SEVERITY_TONE.minor)}>
-                    {severity}
-                  </span>
-                )}
-                <span className="flex-1 min-w-0">{text}</span>
-                {pageUrl && (
-                  <span className="text-[11px] text-slate-400 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded" title={pageUrl}>
-                    on {pageLabel(pageUrl)}
-                  </span>
-                )}
-              </div>
-              {impact && (
-                <p className="ml-4 mt-0.5 text-[11px] text-slate-400 italic">Why it matters: {impact}</p>
-              )}
-              {crop && (
-                <a href={assetUrl(crop)} target="_blank" rel="noopener noreferrer"
-                   className="mt-1.5 ml-4 block w-fit" title="Screenshot of this exact issue">
-                  <img src={assetUrl(crop)} alt="Issue screenshot" loading="lazy"
-                       className="max-h-28 rounded-md border border-white/15" />
-                </a>
-              )}
-            </div>
-          );
-        })}
+      <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-sm max-h-40 overflow-y-auto">
+        {items.map((item, i) => (
+          <div key={i} className="text-slate-300 break-all mb-1 flex gap-2">
+            <span className="text-slate-500 flex-shrink-0">•</span>
+            <span>{typeof item === 'string' ? item : (item.display || item.url || item.issue || JSON.stringify(item))}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -149,6 +271,7 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
   const findings = isExpanded ? parsePageFindings(page.findings_evidence) : null;
 
   const categoryStats = findings ? {
+    'Functional': (findings.functional_issues || []).length,
     'Broken Links': (findings.broken_links || []).length,
     'JS Errors': (findings.console_errors || []).length,
     'Missing Alt': (findings.missing_alt_images || []).length,
@@ -156,10 +279,7 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
     'Security': (findings.security_issues || []).length,
     'Accessibility': (findings.accessibility_issues || []).length,
     'Mobile': (findings.mobile_issues || []).length,
-    'Functional': (findings.interaction_issues || []).length,
-    'Forms': (findings.form_issues || []).length,
-    'Visual': (findings.visual_issues || []).length,
-    'Content': (findings.content_issues || []).length,
+    'Performance': (findings.performance_issues || []).length,
   } : null;
 
   return (
@@ -234,26 +354,7 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
                         <ul className="text-xs text-slate-300 space-y-1">
                           {shown.map((f, i) => (
                             <li key={i} className="bg-white/5 p-2 rounded-lg border border-white/10 break-all">
-                              {f.severity && (
-                                <span className={
-                                  'inline-block mr-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase align-middle ' +
-                                  (f.severity === 'critical' ? 'bg-red-500/20 text-red-300'
-                                    : f.severity === 'major' ? 'bg-orange-500/20 text-orange-300'
-                                    : f.severity === 'minor' ? 'bg-amber-500/15 text-amber-300'
-                                    : 'bg-slate-500/20 text-slate-400')
-                                }>{f.severity}</span>
-                              )}
                               {f.display || f.url || f.text || f.issue || f.src || JSON.stringify(f)}
-                              {f.why && (
-                                <span className="block mt-0.5 text-[11px] text-slate-400 italic">Why it matters: {f.why}</span>
-                              )}
-                              {f.screenshot_crop && (
-                                <a href={assetUrl(f.screenshot_crop)} target="_blank" rel="noopener noreferrer"
-                                   className="mt-1.5 block w-fit" title="Screenshot of this exact issue">
-                                  <img src={assetUrl(f.screenshot_crop)} alt="Issue screenshot" loading="lazy"
-                                       className="max-h-28 rounded-md border border-white/15" />
-                                </a>
-                              )}
                             </li>
                           ))}
                           {arr.length > 5 && (
@@ -269,9 +370,9 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
                       <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
                         <Camera className="w-3.5 h-3.5" /> Page Screenshot
                       </p>
-                      <a href={assetUrl(page.screenshot)} target="_blank" rel="noopener noreferrer">
+                      <a href={'http://127.0.0.1:5000' + page.screenshot} target="_blank" rel="noopener noreferrer">
                         <img
-                          src={assetUrl(page.screenshot)}
+                          src={'http://127.0.0.1:5000' + page.screenshot}
                           alt={'Screenshot of ' + page.url}
                           className="max-h-48 border border-white/10 rounded-lg hover:border-brand-sky/50 transition"
                         />
@@ -316,6 +417,13 @@ const TestCases = () => {
   const [manualBusy, setManualBusy] = useState(false);
   const [manualMessage, setManualMessage] = useState('');
 
+  // Tester workspace: the issue being written up, and the verdict on whether
+  // what they saw matched what the business asked for.
+  const [issueTitle, setIssueTitle] = useState('');
+  const [issueCategory, setIssueCategory] = useState('layout');
+  const [issueSeverity, setIssueSeverity] = useState('moderate');
+  const [expectedMet, setExpectedMet] = useState(null);
+
   const [convertingToBugs, setConvertingToBugs] = useState(false);
   const [conversionMessage, setConversionMessage] = useState('');
 
@@ -349,7 +457,9 @@ const TestCases = () => {
 
     const loadProjects = async () => {
       try {
-        const list = await getAllProjects();
+        const res = await getProjects();
+        // /projects is paginated -> { data: [...], pagination }. Support both shapes.
+        const list = Array.isArray(res.data) ? res.data : (res.data?.data || []);
         setProjects(list);
       } catch (err) {
         if (err.response?.status === 401) {
@@ -488,7 +598,10 @@ const TestCases = () => {
       test_type: testType,
       // Automated = crawl the whole site; manual = just the single page.
       crawl_pages: testType === 'automated',
-      max_pages: testType === 'automated' ? maxPages : 1,
+      // Manual runs crawl too, so the page limit applies to both. It used to
+      // be forced to 1 here, which made a manual auto-crawl stop before it
+      // visited a single extra page.
+      max_pages: maxPages,
     };
 
     try {
@@ -567,24 +680,7 @@ const TestCases = () => {
     setConversionMessage('');
     try {
       // Queue the run on a background worker, then poll for progress/result.
-      // If the project has no login session, the backend blocks with 409 so we
-      // can warn that the crawl would run logged-out; re-send with force on OK.
-      let startRes;
-      try {
-        startRes = await runTestCaseAsync(tc.id);
-      } catch (err) {
-        if (err.response?.status === 409 && err.response?.data?.needs_login_confirm) {
-          const proceed = window.confirm(
-            (err.response.data.error || 'No login session for this project.') +
-            '\n\nClick OK to run anyway as a logged-out visitor, or Cancel to log in '
-            + 'first via "Open & Login" on the Projects page.'
-          );
-          if (!proceed) return;   // finally{} resets the running state
-          startRes = await runTestCaseAsync(tc.id, true);
-        } else {
-          throw err;
-        }
-      }
+      const startRes = await runTestCaseAsync(tc.id);
       const jobId = startRes.data.job_id;
       setRunJobId(tc.id, jobId);
 
@@ -617,38 +713,20 @@ const TestCases = () => {
     }
   };
 
-  // Holds the pending poll timeout + an alive flag so the recursive poll loop
-  // can be stopped the moment the component unmounts. Without this the setTimeout
-  // chain keeps hitting the API and calling setState on an unmounted component
-  // (memory leak + React warning + a closed modal getting resurrected).
-  const pollTimerRef = useRef(null);
-  const pollAliveRef = useRef(true);
-
-  useEffect(() => {
-    pollAliveRef.current = true;
-    return () => {
-      pollAliveRef.current = false;
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-    };
-  }, []);
-
   // Poll a queued run until it finishes, updating live progress as it goes.
   const pollRunJob = (tcId, jobId) =>
     new Promise((resolve, reject) => {
       const tick = async () => {
-        if (!pollAliveRef.current) return;   // component gone — stop polling
         try {
           const res = await getRunJob(jobId);
-          if (!pollAliveRef.current) return;
           const job = res.data;
           if (job.progress) setRunProgress(tcId, job.progress);
           if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
             resolve(job);
           } else {
-            pollTimerRef.current = setTimeout(tick, 2000);
+            setTimeout(tick, 2000);
           }
         } catch (e) {
-          if (!pollAliveRef.current) return;
           // A 404 mid-poll means the in-memory job vanished — almost always the
           // backend restarted (a .py save triggers Flask's reloader) and killed
           // the crawl. Give a clear cause instead of a bare "Job not found".
@@ -684,23 +762,6 @@ const TestCases = () => {
     }
   };
 
-  // User has finished logging in and clicked "start crawl" — tell the worker to
-  // take over and BFS-walk the authenticated app. The crawl never starts on its
-  // own, so it can't run before the user is logged in.
-  const triggerAutoCrawl = async () => {
-    if (!manualRunFor) return;
-    setManualBusy(true);
-    setManualMessage('');
-    try {
-      await autoCrawlManualRun(manualRunFor.id);
-      setManualMessage('Crawl started — walking the pages now.');
-    } catch (err) {
-      setManualMessage(err.response?.data?.error || 'Could not start the crawl.');
-    } finally {
-      setManualBusy(false);
-    }
-  };
-
   // Poll the manual run snapshot every 2s while the modal is open.
   useEffect(() => {
     if (!manualRunFor) return undefined;
@@ -719,12 +780,44 @@ const TestCases = () => {
     return () => { alive = false; clearInterval(id); };
   }, [manualRunFor]);
 
+  // Tick a checklist step. The server owns the state, so we take its snapshot
+  // back rather than guessing what it now looks like.
+  const markStep = async (index, status, note = '') => {
+    if (!manualRunFor) return;
+    try {
+      const res = await markManualStep(manualRunFor.id, index, status, note);
+      setManualSnap(res.data.run);
+    } catch (err) {
+      setManualMessage(err.response?.data?.error || 'Could not update that step.');
+    }
+  };
+
+  const failStep = (index) => {
+    const note = window.prompt('What went wrong on this step? (optional)') || '';
+    markStep(index, 'failed', note);
+  };
+
+  const reportIssue = async () => {
+    if (!manualRunFor || issueTitle.trim().length < 3) return;
+    try {
+      const res = await reportManualIssue(manualRunFor.id, {
+        title: issueTitle.trim(),
+        category: issueCategory,
+        severity: issueSeverity,
+      });
+      setManualSnap(res.data.run);
+      setIssueTitle('');
+    } catch (err) {
+      setManualMessage(err.response?.data?.error || 'Could not record that issue.');
+    }
+  };
+
   const finishManual = async (outcome) => {
     if (!manualRunFor) return;
     setManualBusy(true);
     setManualMessage('');
     try {
-      const res = await finishManualRun(manualRunFor.id, outcome, manualNote);
+      const res = await finishManualRun(manualRunFor.id, outcome, manualNote, expectedMet);
       setManualMessage(
         `${res.data.status} — ${res.data.pages_visited} page(s) captured.`
       );
@@ -1093,18 +1186,32 @@ const TestCases = () => {
                 </div>
               </div>
 
-              {testType === 'automated' && (
-                <div className="bg-brand-indigo/10 border border-brand-indigo/30 rounded-xl p-4">
-                  <div className="flex items-start gap-3">
-                    <Network className="w-6 h-6 text-brand-sky flex-shrink-0" />
-                    <div className="flex-1">
-                      <p className="font-medium text-white">Full Site Test</p>
-                      <p className="text-xs text-slate-300 mt-1">
-                        The platform will automatically discover and test every page on your site
-                        (up to 100 pages). Each page is checked for broken links, accessibility,
-                        security, mobile usability, SEO, and more.
-                      </p>
-                      <p className="text-xs text-brand-sky mt-2">Larger sites take 2-10 minutes to complete.</p>
+              {/* Both modes crawl now: automated does it headlessly, manual
+                  walks the rest of the site after you have logged in. */}
+              <div className="bg-brand-indigo/10 border border-brand-indigo/30 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <Network className="w-6 h-6 text-brand-sky flex-shrink-0" />
+                  <div className="flex-1">
+                    {testType === 'automated' ? (
+                      <>
+                        <p className="font-medium text-white">Full Site Test</p>
+                        <p className="text-xs text-slate-300 mt-1">
+                          The platform will automatically discover and test every page on your site.
+                          Each page is checked for broken links, accessibility, security, mobile
+                          usability, SEO and performance, and your steps run in a real browser.
+                        </p>
+                        <p className="text-xs text-brand-sky mt-2">Larger sites take 2-10 minutes to complete.</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-medium text-white">Crawl the rest of the site</p>
+                        <p className="text-xs text-slate-300 mt-1">
+                          After you log in by hand, the browser walks the remaining pages for you,
+                          screenshotting each one and checking it for broken links, accessibility
+                          and security while you focus on what only you can judge.
+                        </p>
+                      </>
+                    )}
 
                       <div className="mt-3 flex items-center gap-2">
                         <label className="text-xs text-slate-300">Max pages to crawl:</label>
@@ -1121,10 +1228,9 @@ const TestCases = () => {
                         />
                         <span className="text-xs text-slate-500">(1–100)</span>
                       </div>
-                    </div>
                   </div>
                 </div>
-              )}
+              </div>
 
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-1.5">Title *</label>
@@ -1146,8 +1252,26 @@ const TestCases = () => {
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-1.5">Steps * (one per line)</label>
                 <textarea value={steps} onChange={(e) => setSteps(e.target.value)}
-                  placeholder={'1. Open the homepage\n2. Click the search bar\n3. Type a query\n4. Press Enter'} rows="4"
+                  placeholder={'Open /login\nType alice@example.com into Email\nType hunter2 into Password\nClick Sign in\nExpect text Welcome back\nExpect url contains /dashboard'}
+                  rows="6"
                   className={`${inputBase} font-mono text-sm ${steps && !isStepsValid ? 'border-red-500/60 focus:ring-red-500/50' : 'border-white/10 focus:ring-brand-sky/60'}`} />
+                {testType === 'automated' ? (
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    These run in a real browser. Understood:{' '}
+                    <span className="text-slate-400 font-mono">Open</span>,{' '}
+                    <span className="text-slate-400 font-mono">Click</span>,{' '}
+                    <span className="text-slate-400 font-mono">Type X into Y</span>,{' '}
+                    <span className="text-slate-400 font-mono">Press</span>,{' '}
+                    <span className="text-slate-400 font-mono">Wait for</span>,{' '}
+                    <span className="text-slate-400 font-mono">Expect text</span>,{' '}
+                    <span className="text-slate-400 font-mono">Expect url contains</span>.
+                    A step that fails is reported as a functional failure.
+                  </p>
+                ) : (
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    Your checklist while testing by hand.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -1227,21 +1351,6 @@ const TestCases = () => {
             </div>
 
             <div className="p-6 space-y-5">
-              {runResult.first_page_error && (
-                <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-sm">
-                  <div className="font-semibold text-red-300 mb-1">Could not reach the site</div>
-                  <div className="text-red-200/80 break-words">{runResult.first_page_error}</div>
-                  <div className="text-xs text-red-200/60 mt-2">
-                    The crawl was aborted because the starting URL didn't load. Check the project URL is reachable from this machine, then run the test again.
-                  </div>
-                </div>
-              )}
-              {runResult.session_warning && (
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-sm">
-                  <div className="font-semibold text-amber-300 mb-1">Session warning</div>
-                  <div className="text-amber-200/80 break-words">{runResult.session_warning}</div>
-                </div>
-              )}
               {(() => {
                 const sc = scoreColor(runResult.health_score || 0);
                 return (
@@ -1312,20 +1421,6 @@ const TestCases = () => {
                 </div>
               )}
 
-              {runResult.severity_breakdown && (
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="text-slate-500">Severity:</span>
-                  {[['critical', 'bg-red-500/20 text-red-300'],
-                    ['major', 'bg-orange-500/20 text-orange-300'],
-                    ['minor', 'bg-amber-500/15 text-amber-300'],
-                    ['info', 'bg-slate-500/20 text-slate-400']].map(([sev, tone]) => (
-                    <span key={sev} className={`px-2 py-1 rounded-lg font-semibold ${tone} ${!runResult.severity_breakdown[sev] ? 'opacity-40' : ''}`}>
-                      {runResult.severity_breakdown[sev] || 0} {sev}
-                    </span>
-                  ))}
-                </div>
-              )}
-
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div className="bg-white/5 border border-white/10 rounded-xl p-3 text-center">
                   <div className="text-xs text-slate-500 mb-1 flex items-center justify-center gap-1"><Clock className="w-3.5 h-3.5" /> Total Time</div>
@@ -1355,6 +1450,11 @@ const TestCases = () => {
                   </div>
                 </div>
               </div>
+
+              <StepResults steps={runResult.steps} summary={runResult.step_summary} />
+              <RegressionPanel regression={runResult.regression} />
+              <CoverageNotes coverage={runResult.coverage} />
+              <ScoreBreakdown breakdown={runResult.score_breakdown} />
 
               {runResult.error_message && (
                 <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 rounded-xl">
@@ -1398,6 +1498,7 @@ const TestCases = () => {
               {/* Combined issue lists - single-page */}
               {!runResult.is_multi_page && (
                 <>
+                  <IssueCategory categoryKey="functional_issues" items={runResult.functional_issues} />
                   <IssueCategory categoryKey="broken_links" items={runResult.broken_links} />
                   <IssueCategory categoryKey="console_errors" items={runResult.console_errors} />
                   <IssueCategory categoryKey="missing_alt_images" items={runResult.missing_alt_images} />
@@ -1405,10 +1506,7 @@ const TestCases = () => {
                   <IssueCategory categoryKey="security_issues" items={runResult.security_issues} />
                   <IssueCategory categoryKey="accessibility_issues" items={runResult.accessibility_issues} />
                   <IssueCategory categoryKey="mobile_issues" items={runResult.mobile_issues} />
-                  <IssueCategory categoryKey="interaction_issues" items={runResult.interaction_issues} />
-                  <IssueCategory categoryKey="form_issues" items={runResult.form_issues} />
-                  <IssueCategory categoryKey="visual_issues" items={runResult.visual_issues} />
-                  <IssueCategory categoryKey="content_issues" items={runResult.content_issues} />
+                  <IssueCategory categoryKey="performance_issues" items={runResult.performance_issues} />
                 </>
               )}
 
@@ -1457,10 +1555,10 @@ const TestCases = () => {
 
             <div className="px-6 py-3 text-sm text-slate-300 bg-white/[0.02] border-b border-white/10">
               A browser window has opened at the project URL. Log in manually
-              (handle any OTP / CAPTCHA there). When you have finished logging in
-              and are on a page inside the app, click <strong className="text-white">
-              I'm logged in — start crawl</strong> and the system will walk every
-              reachable page for you. Click <strong className="text-white">Mark Pass</strong> /
+              (handle any OTP / CAPTCHA there). Once you reach a page that isn't
+              the login screen, the system will <strong className="text-white">
+              automatically take over</strong> and walk every reachable page for
+              you. Click <strong className="text-white">Mark Pass</strong> /
               <strong className="text-white"> Mark Fail</strong> when done.
             </div>
 
@@ -1469,19 +1567,15 @@ const TestCases = () => {
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-brand-indigo" />
                   <span className="text-sm text-brand-indigo font-medium">
-                    Crawling… {manualSnap.pages_visited}/{manualSnap.max_pages}
+                    Auto-crawling… {manualSnap.pages_visited}/{manualSnap.max_pages}
                   </span>
                 </>
               ) : manualSnap?.status === 'ready' ? (
                 <>
                   <span className="w-2 h-2 rounded-full bg-brand-teal animate-pulse" />
-                  <span className="text-sm text-slate-300 flex-1">
-                    Finish logging in, then start the crawl when you're ready.
+                  <span className="text-sm text-slate-300">
+                    Watching browser — auto-crawl will start once you leave the login page.
                   </span>
-                  <button onClick={triggerAutoCrawl} disabled={manualBusy}
-                    className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-brand-gradient text-white shadow-glow disabled:opacity-50">
-                    <Play className="w-4 h-4" /> I'm logged in — start crawl
-                  </button>
                 </>
               ) : manualSnap?.status === 'done' ? (
                 <span className="text-sm text-brand-teal">Crawl finished.</span>
@@ -1491,18 +1585,110 @@ const TestCases = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2">
+              {/* The written steps, as a checklist to work through. */}
+              {(manualSnap?.steps || []).length > 0 && (
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-slate-100">Checklist</h3>
+                    <span className="text-xs text-slate-500">
+                      {manualSnap.steps_done}/{manualSnap.steps_total} checked
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    {manualSnap.steps.map((s) => (
+                      <div key={s.index}
+                        className={
+                          'flex gap-2 items-start text-sm rounded-lg p-2 border ' +
+                          (s.status === 'passed' ? 'border-brand-teal/30 bg-brand-teal/10'
+                            : s.status === 'failed' ? 'border-red-500/40 bg-red-500/10'
+                            : s.status === 'skipped' ? 'border-white/10 opacity-60'
+                            : 'border-white/10 bg-white/5')
+                        }>
+                        <span className="text-slate-500 w-5 flex-shrink-0">{s.index + 1}.</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-slate-200 break-words">{s.text}</div>
+                          {s.note && <div className="text-xs text-slate-400 mt-0.5">{s.note}</div>}
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">
+                          <button onClick={() => markStep(s.index, 'passed')} title="Passed"
+                            className={'w-7 h-7 rounded text-xs ' + (s.status === 'passed'
+                              ? 'bg-brand-teal/30 text-brand-teal' : 'bg-white/5 hover:bg-white/10 text-slate-400')}>
+                            ✓
+                          </button>
+                          <button onClick={() => failStep(s.index)} title="Failed"
+                            className={'w-7 h-7 rounded text-xs ' + (s.status === 'failed'
+                              ? 'bg-red-500/30 text-red-200' : 'bg-white/5 hover:bg-white/10 text-slate-400')}>
+                            ✕
+                          </button>
+                          <button onClick={() => markStep(s.index, 'skipped')} title="Skipped"
+                            className={'w-7 h-7 rounded text-xs ' + (s.status === 'skipped'
+                              ? 'bg-white/20 text-slate-200' : 'bg-white/5 hover:bg-white/10 text-slate-400')}>
+                            –
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Report what you can see but a machine cannot judge. */}
+              <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-slate-100">Report an issue</h3>
+                  <span className="text-xs text-slate-500">
+                    {manualSnap?.reported_count || 0} reported
+                    {manualSnap?.auto_findings_count > 0 &&
+                      ` · ${manualSnap.auto_findings_count} found automatically`}
+                  </span>
+                </div>
+                <input value={issueTitle} onChange={(e) => setIssueTitle(e.target.value)}
+                  placeholder="What is wrong? e.g. Pay button overlaps the total"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 mb-2 focus:outline-none focus:border-brand-indigo" />
+                <div className="flex gap-2 flex-wrap">
+                  <select value={issueCategory} onChange={(e) => setIssueCategory(e.target.value)}
+                    className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none">
+                    {Object.entries(manualSnap?.issue_categories || {}).map(([key, label]) => (
+                      <option key={key} value={key} className="bg-slate-900">{label}</option>
+                    ))}
+                  </select>
+                  <select value={issueSeverity} onChange={(e) => setIssueSeverity(e.target.value)}
+                    className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none">
+                    {['critical', 'serious', 'moderate', 'minor'].map((s) => (
+                      <option key={s} value={s} className="bg-slate-900">{s}</option>
+                    ))}
+                  </select>
+                  <button onClick={reportIssue} disabled={issueTitle.trim().length < 3}
+                    className="ml-auto text-sm px-3 py-1.5 rounded-lg bg-brand-gradient text-white disabled:opacity-40 disabled:cursor-not-allowed">
+                    Add issue
+                  </button>
+                </div>
+                {(manualSnap?.reported || []).length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {manualSnap.reported.map((r) => (
+                      <div key={r.index} className="text-xs text-slate-300 flex gap-2">
+                        <span className={'px-1.5 py-0.5 rounded ' + (SEVERITY_TONE[r.severity] || '')}>
+                          {r.severity}
+                        </span>
+                        <span className="flex-1 break-words">{r.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {(manualSnap?.pages || []).length === 0 ? (
                 <div className="text-center text-slate-500 text-sm py-8">
                   Browser ready. Pages will appear here as you navigate.
                 </div>
               ) : (
                 manualSnap.pages.map((p, i) => (
-                  <a key={i} href={assetUrl(p.screenshot)} target="_blank" rel="noreferrer"
+                  <a key={i} href={`http://127.0.0.1:5000${p.screenshot}`} target="_blank" rel="noreferrer"
                     className="flex gap-3 items-center bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg p-2 transition">
                     <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded bg-brand-indigo/20 text-brand-indigo text-xs font-bold">
                       {i + 1}
                     </span>
-                    <img src={assetUrl(p.screenshot)} alt=""
+                    <img src={`http://127.0.0.1:5000${p.screenshot}`} alt=""
                       className="w-16 h-12 object-cover rounded border border-white/10" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-white truncate">{p.url}</div>
@@ -1514,6 +1700,26 @@ const TestCases = () => {
             </div>
 
             <div className="px-6 py-4 border-t border-white/10 space-y-3">
+              {/* The verdict this run exists to produce: did the software do
+                  what the business asked for? Only a human can answer it. */}
+              {manualSnap?.expected_result && (
+                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                  <div className="text-xs text-slate-500 mb-1">Expected result</div>
+                  <div className="text-sm text-slate-200 mb-2">{manualSnap.expected_result}</div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setExpectedMet(true)}
+                      className={'text-xs px-3 py-1.5 rounded-lg ' + (expectedMet === true
+                        ? 'bg-brand-teal/25 text-brand-teal' : 'bg-white/5 hover:bg-white/10 text-slate-300')}>
+                      Met
+                    </button>
+                    <button onClick={() => setExpectedMet(false)}
+                      className={'text-xs px-3 py-1.5 rounded-lg ' + (expectedMet === false
+                        ? 'bg-red-500/25 text-red-200' : 'bg-white/5 hover:bg-white/10 text-slate-300')}>
+                      Not met
+                    </button>
+                  </div>
+                </div>
+              )}
               <textarea
                 value={manualNote}
                 onChange={(e) => setManualNote(e.target.value)}
@@ -1607,3 +1813,4 @@ const TestCases = () => {
 };
 
 export default TestCases;
+ 
