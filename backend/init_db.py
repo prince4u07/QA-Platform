@@ -1,116 +1,105 @@
+"""
+Create the QA Platform database and all of its tables.
+
+Reads backend/schema.sql so that file stays the single source of truth for
+the schema. Safe to run more than once: every statement uses IF NOT EXISTS,
+so existing tables and their data are left untouched.
+
+    python init_db.py
+
+To change the schema, edit schema.sql. To add a column to a database that
+already has data, use migrate_db.py instead.
+"""
+
+import os
+import re
+import sys
+
 import MySQLdb
+
 from config import Config
 
-# Connect to MySQL server (not a specific database)
-conn = MySQLdb.connect(
-    host=Config.MYSQL_HOST,
-    user=Config.MYSQL_USER,
-    passwd=Config.MYSQL_PASSWORD
-)
+SCHEMA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schema.sql')
 
-cursor = conn.cursor()
+# schema.sql creates and selects the database by its literal name. init_db.py
+# does that itself using Config, so the database name can be overridden through
+# the DB_NAME environment variable. These statements are skipped from the file.
+SKIP_PREFIXES = ('CREATE DATABASE', 'USE ')
 
-# Create database
-try:
-    cursor.execute(f"CREATE DATABASE IF NOT EXISTS {Config.MYSQL_DB} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-    print(f"✓ Database '{Config.MYSQL_DB}' created/verified")
-except Exception as e:
-    print(f"✗ Error creating database: {e}")
 
-# Select the database
-cursor.execute(f"USE {Config.MYSQL_DB}")
+def read_schema_statements(path):
+    """Return the CREATE TABLE statements from schema.sql, comments stripped."""
+    with open(path, 'r', encoding='utf-8') as f:
+        sql = f.read()
 
-# Create users table
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    password VARCHAR(255) NOT NULL,
-    role VARCHAR(20) DEFAULT 'tester',
-    profile_picture VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-print("✓ Users table created/verified")
+    # Drop full-line and trailing "--" comments before splitting on ";",
+    # so a semicolon can never be picked up from inside a comment.
+    sql = re.sub(r'--[^\n]*', '', sql)
 
-# Create projects table
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS projects (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id INT NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    base_url VARCHAR(255),
-    upload_path VARCHAR(255),
-    environment VARCHAR(20) DEFAULT 'dev',
-    source_type VARCHAR(20) DEFAULT 'url',
-    requires_login BOOLEAN DEFAULT FALSE,
-    has_active_session BOOLEAN DEFAULT FALSE,
-    session_captured_at TIMESTAMP NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    INDEX idx_user_id (user_id),
-    INDEX idx_created_at (created_at)
-)
-""")
-print("✓ Projects table created/verified")
+    statements = []
+    for raw in sql.split(';'):
+        stmt = raw.strip()
+        if not stmt:
+            continue
+        if stmt.upper().startswith(SKIP_PREFIXES):
+            continue
+        statements.append(stmt)
+    return statements
 
-# Create test_cases table
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS test_cases (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    project_id INT NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    steps TEXT,
-    expected_result TEXT,
-    priority VARCHAR(20),
-    status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-)
-""")
-print("✓ Test cases table created/verified")
 
-# Create test_runs table
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS test_runs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    test_case_id INT NOT NULL,
-    status VARCHAR(20),
-    screenshot VARCHAR(255),
-    duration_ms INT,
-    page_load_time_ms INT,
-    console_errors INT,
-    broken_links INT,
-    missing_alt_images INT,
-    issues_found INT,
-    health_score INT,
-    total_page_size_kb INT,
-    run_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE CASCADE
-)
-""")
-print("✓ Test runs table created/verified")
+def table_name_of(statement):
+    """Pull the table name out of a CREATE TABLE statement, for logging."""
+    match = re.search(r'CREATE TABLE IF NOT EXISTS\s+(\w+)', statement, re.IGNORECASE)
+    return match.group(1) if match else '(unknown)'
 
-# Create bugs table
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS bugs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    project_id INT,
-    title VARCHAR(100) NOT NULL,
-    description TEXT,
-    severity VARCHAR(20),
-    status VARCHAR(20) DEFAULT 'open',
-    category VARCHAR(50),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
-)
-""")
-print("✓ Bugs table created/verified")
 
-conn.commit()
-cursor.close()
-conn.close()
+def main():
+    if not os.path.exists(SCHEMA_FILE):
+        print(f"x schema.sql not found at {SCHEMA_FILE}")
+        return 1
 
-print("\n✓ Database initialization complete!")
+    statements = read_schema_statements(SCHEMA_FILE)
+    if not statements:
+        print("x schema.sql contained no statements")
+        return 1
+
+    # Connect to the server without selecting a database, so the database
+    # itself can be created if this is a fresh install.
+    conn = MySQLdb.connect(
+        host=Config.MYSQL_HOST,
+        user=Config.MYSQL_USER,
+        passwd=Config.MYSQL_PASSWORD,
+    )
+    cursor = conn.cursor()
+
+    cursor.execute(
+        f"CREATE DATABASE IF NOT EXISTS {Config.MYSQL_DB} "
+        f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    )
+    print(f"- database '{Config.MYSQL_DB}' ready")
+    cursor.execute(f"USE {Config.MYSQL_DB}")
+
+    failed = 0
+    for stmt in statements:
+        name = table_name_of(stmt)
+        try:
+            cursor.execute(stmt)
+            print(f"- table '{name}' ready")
+        except Exception as e:
+            failed += 1
+            print(f"x table '{name}' failed: {e}")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if failed:
+        print(f"\nx finished with {failed} failed statement(s)")
+        return 1
+
+    print(f"\n- done, {len(statements)} tables ready")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

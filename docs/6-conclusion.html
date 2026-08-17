@@ -1,0 +1,334 @@
+<title>QA Platform Conclusion</title>
+<style>
+  /* Same visual system as the other submission documents in docs/ so the set
+     reads as one: true black ground, white text, mono for anything that is
+     data. A print block at the end inverts it for paper submission. */
+  :root {
+    --ground:  #000000;
+    --panel:   #0a0c0e;
+    --line:    #1e2226;
+    --line-lo: #131719;
+    --text:    #ffffff;
+    --muted:   #8a929b;
+    --dim:     #5c646d;
+    --pass:    #3fb950;
+    --warn:    #d29922;
+
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground); color: var(--text); font-family: var(--sans);
+    font-size: 15px; line-height: 1.65; margin: 0; padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  header { padding: 64px 0 0; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--pass); margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(2rem, 5vw, 2.6rem); font-weight: 700; letter-spacing: -0.025em;
+    line-height: 1.1; text-wrap: balance; margin: 0 0 18px;
+  }
+  .meta {
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0; padding: 0; list-style: none;
+  }
+  .meta b { color: var(--text); font-weight: 500; }
+
+  .figures {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 40px 0 8px;
+  }
+  .fig { background: var(--ground); padding: 18px; }
+  .fig .n {
+    font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 27px;
+    font-weight: 600; line-height: 1; letter-spacing: -0.02em; display: block;
+  }
+  .fig .n.ok { color: var(--pass); }
+  .fig .l {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--dim); margin-top: 9px; display: block;
+  }
+  .stamp { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin: 0 0 54px; }
+
+  section { margin: 0 0 46px; }
+  h2 {
+    font-size: 1.05rem; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px;
+    padding-top: 26px; border-top: 1px solid var(--line);
+    display: flex; gap: 12px; align-items: baseline;
+  }
+  h2 .num {
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    color: var(--pass); letter-spacing: 0.04em; flex: none;
+  }
+  h3 {
+    font-size: 13px; font-weight: 600; margin: 26px 0 2px;
+    font-family: var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  p { margin: 12px 0; max-width: 68ch; color: #e9edf1; }
+  p.lead { color: var(--text); }
+  strong { font-weight: 600; color: var(--text); }
+  code {
+    font-family: var(--mono); font-size: 0.875em; color: var(--text);
+    background: var(--panel); border: 1px solid var(--line-lo); padding: 1px 5px;
+  }
+
+  .scroll { overflow-x: auto; margin: 18px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 520px; }
+  th, td {
+    text-align: left; padding: 9px 14px 9px 0;
+    border-bottom: 1px solid var(--line-lo); vertical-align: top;
+  }
+  th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--dim); font-weight: 500; border-bottom: 1px solid var(--line); padding-top: 0;
+  }
+  td.ok { color: var(--pass); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  td.part { color: var(--warn); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+
+  ul { padding-left: 20px; max-width: 68ch; }
+  li { margin-bottom: 9px; }
+  li::marker { color: var(--dim); }
+  ul.limits li::marker { color: var(--warn); }
+
+  .horizon {
+    border-left: 2px solid var(--line); padding: 2px 0 2px 16px; margin: 20px 0;
+  }
+  .horizon .when {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--pass); display: block; margin-bottom: 6px;
+  }
+  .horizon ul { margin: 0; }
+
+  footer {
+    border-top: 1px solid var(--line); padding-top: 20px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--dim); line-height: 1.7;
+  }
+  a { color: var(--pass); }
+  a:focus-visible { outline: 2px solid var(--pass); outline-offset: 2px; }
+
+  @media (max-width: 560px) {
+    body { padding: 0 18px 64px; font-size: 14.5px; }
+    header { padding-top: 44px; }
+  }
+  @media print {
+    :root {
+      --ground:#fff; --panel:#f6f7f8; --line:#c8ccd0; --line-lo:#e3e6e8;
+      --text:#000; --muted:#3d4348; --dim:#5c646d; --pass:#1a7f37; --warn:#8a6100;
+    }
+    body { padding: 0; font-size: 11pt; }
+    .fig, .figures { background: #fff; }
+    p { color: #000; }
+    section { break-inside: avoid; }
+    h2 { break-after: avoid; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Project Report &middot; Chapter 6</p>
+    <h1>Conclusion</h1>
+    <ul class="meta">
+      <li><b>QA Platform</b></li>
+      <li>Prince Kumar Vishwakarma</li>
+      <li>UID 24BIT062</li>
+    </ul>
+  </header>
+
+  <div class="figures">
+    <div class="fig"><span class="n">4,121</span><span class="l">Lines of analysis logic</span></div>
+    <div class="fig"><span class="n">9</span><span class="l">Check categories</span></div>
+    <div class="fig"><span class="n ok">136</span><span class="l">Tests passing</span></div>
+    <div class="fig"><span class="n">1</span><span class="l">External dependency</span></div>
+  </div>
+  <p class="stamp">Figures taken from the working system on 15 August 2026</p>
+
+  <section>
+    <h2><span class="num">6.1</span> Conclusion</h2>
+
+    <p class="lead">QA Platform set out to replace a scattered, manual, multi-tool quality assurance
+    process with a single automated workflow, and it does that. A user registers a website, runs an
+    audit, and reads consolidated results in one place, including the pages behind a login that most
+    automated tools cannot reach.</p>
+
+    <p>The system drives a real Chromium browser through Playwright, crawls the target, and applies
+    nine categories of checks to every page it visits. Each finding is graded by its own severity and
+    rolled into a health score that can be compared between runs. All of the analysis logic is written
+    within the project. The single external component is axe-core, the open source accessibility
+    engine, which is bundled in the repository and injected into each page rather than re-implementing
+    the WCAG rule set. No external service is contacted to perform any test.</p>
+
+    <h3>Objectives set against what was delivered</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Objective</th><th>Status</th><th>Delivered as</th></tr></thead>
+        <tbody>
+          <tr><td>Unified platform for projects and test cases</td><td class="ok">Met</td>
+              <td>Project and test case management with per-user isolation</td></tr>
+          <tr><td>Automated crawler using a real browser</td><td class="ok">Met</td>
+              <td>Playwright and Chromium, breadth-first, up to 100 pages</td></tr>
+          <tr><td>Checks across six quality dimensions</td><td class="ok">Exceeded</td>
+              <td>Nine categories: the original six plus performance, functional failures and alt text</td></tr>
+          <tr><td>Severity grading and a trackable health score</td><td class="ok">Met</td>
+              <td>Per-finding severity feeding a weighted score, plus run-to-run regression</td></tr>
+          <tr><td>Authenticated crawling including OTP</td><td class="ok">Met</td>
+              <td>Manual login capture, session replay, OTP handshake</td></tr>
+          <tr><td>Rule-driven and AI-assisted analysis</td><td class="ok">Met</td>
+              <td>Local rules for detection, an optional assistant for explanation</td></tr>
+          <tr><td>Auth, bug tracker, history, exportable reports</td><td class="ok">Met</td>
+              <td>JWT auth, bug tracker, per-page evidence, PDF export</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Capabilities beyond the original scope</h3>
+    <p>Four capabilities emerged during development that were not in the original plan, each answering
+    a weakness the earlier design could not:</p>
+    <ul>
+      <li><strong>Executable test steps.</strong> Steps written in plain English are performed by the
+      browser, so the platform detects functional failures and broken multi-step workflows. A crawler
+      alone cannot tell that a login form rejects a valid password while every page still returns 200.</li>
+      <li><strong>Regression detection.</strong> Each run is compared against the previous run of the
+      same test case and reports what is newly broken, what is fixed, and how the score moved.</li>
+      <li><strong>Performance measurement.</strong> Real page weight and load timings, with thresholds
+      that name the oversized files responsible.</li>
+      <li><strong>A manual tester workspace.</strong> The written steps become a live checklist, issues
+      are reported against the exact page and screenshot on screen, and automated checks run on every
+      page the tester walks through.</li>
+    </ul>
+
+    <p>The system is verified by <strong>136 automated tests</strong>, 129 covering the backend and 7
+    covering the interface, including tests that drive a real browser against a disposable website
+    generated by the test itself. The suite runs in about eleven seconds and found genuine defects
+    during development, among them a health score that rated every real website as zero and a crash
+    that took down the reports dashboard when one endpoint returned no data.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">6.2</span> Limitations of the System</h2>
+    <p>Stated plainly. Knowing where a system is weak is more useful than a list of what it does well,
+    and every item below is a specific, checkable claim rather than a general caveat.</p>
+
+    <h3>Depth of detection</h3>
+    <ul class="limits">
+      <li><strong>The SEO check is shallow.</strong> It verifies that a page has a title and nothing
+      else. Meta descriptions, heading structure, viewport declaration and indexing directives are not
+      inspected, so a page can pass the SEO category while being poorly optimised.</li>
+      <li><strong>The security check covers four things.</strong> HTTPS usage and three response
+      headers. Mixed content and insecure cookie flags are not detected, and a browser warning about
+      mixed content is currently filtered out of the console results.</li>
+      <li><strong>Mobile checks are skipped on authenticated crawls.</strong> A logged-in session runs
+      in a desktop viewport, where measuring tap targets would flag every ordinary control. The run
+      says so in its coverage notes, but the gap is real.</li>
+      <li><strong>Two checks are capped per page.</strong> Thirty links and fifty tap targets. Larger
+      pages are only partially examined. The report states what was skipped, so a partial result is
+      never presented as a clean one.</li>
+      <li><strong>Accessibility correctness is inherited.</strong> The platform trusts axe-core's
+      verdicts. What it verifies is that those verdicts are carried through to severity and scoring
+      correctly, not that axe-core is itself right.</li>
+    </ul>
+
+    <h3>Reliability and engineering practice</h3>
+    <ul class="limits">
+      <li><strong>Flakiness is not detected.</strong> If a page is caught mid-render, the resulting
+      finding is reported as a new regression, indistinguishable from a genuine one. Nothing re-checks
+      a finding before calling it new.</li>
+      <li><strong>The project is not under version control</strong> and has no continuous integration,
+      so tests are run by hand and there is no history of changes.</li>
+      <li><strong>Interface testing is thin.</strong> Seven behavioural tests covering one page. The
+      remaining pages, including test case management and the bug tracker, have no behavioural
+      coverage.</li>
+      <li><strong>Errors are frequently swallowed.</strong> 132 broad exception handlers return a
+      generic message, which makes diagnosis harder than it should be.</li>
+    </ul>
+
+    <h3>Scale and deployment</h3>
+    <ul class="limits">
+      <li><strong>Single machine, two crawl workers.</strong> Designed for one user at a time. No load
+      or concurrency testing has been carried out.</li>
+      <li><strong>Captured login sessions are stored as plain files</strong> on disk, unencrypted. This
+      is acceptable for local use and would not be for a shared deployment.</li>
+      <li><strong>MySQL must be started manually</strong> and the platform reports the database as
+      unreachable when it is not running.</li>
+      <li><strong>The AI assistant requires an API key and internet access.</strong> Without them the
+      testing features work unchanged and only the assistant is unavailable.</li>
+      <li><strong>Static site upload was removed.</strong> Testing is against live URLs only.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">6.3</span> Future Scope of the Project</h2>
+    <p>Ordered by what would add the most value for the least work, using the limitations above as the
+    agenda rather than a wish list.</p>
+
+    <div class="horizon">
+      <span class="when">Immediate &middot; closing known gaps</span>
+      <ul>
+        <li><strong>Complete the SEO and security checks.</strong> Meta description, heading structure,
+        viewport and indexing directives; mixed content and cookie flags. The framework already
+        supports them, so this is filling in rules rather than new architecture.</li>
+        <li><strong>Version control and continuous integration.</strong> Running the suite
+        automatically on every change, which turns 136 tests from something run by hand into a
+        genuine safety net.</li>
+        <li><strong>Behavioural tests for the remaining pages</strong>, extending the pattern already
+        established for the reports dashboard.</li>
+        <li><strong>Mobile checks on authenticated pages</strong>, by running a second pass in a
+        mobile viewport while holding the same session.</li>
+      </ul>
+    </div>
+
+    <div class="horizon">
+      <span class="when">Near term &middot; trustworthiness</span>
+      <ul>
+        <li><strong>Flake detection.</strong> Re-verify a finding before reporting it as new, and mark
+        one that does not reproduce as unstable rather than as a regression. This is what makes
+        regression detection safe to act on automatically.</li>
+        <li><strong>Scheduled runs.</strong> Nightly audits against registered projects, so quality is
+        tracked continuously instead of only when someone remembers to click Run.</li>
+        <li><strong>Visual regression testing.</strong> Comparing screenshots between runs to catch
+        layout breakage, which is currently the largest class of defect only a human can see.</li>
+        <li><strong>Coverage measurement</strong>, to show which parts of the analysis engine no test
+        exercises.</li>
+      </ul>
+    </div>
+
+    <div class="horizon">
+      <span class="when">Longer term &middot; scale and reach</span>
+      <ul>
+        <li><strong>Cross-browser testing.</strong> Playwright already supports Firefox and WebKit;
+        the engine is written against a browser interface, not Chromium specifically.</li>
+        <li><strong>Team collaboration.</strong> Shared projects, assignment and roles, since the
+        database already carries a role for every user.</li>
+        <li><strong>Issue tracker integration.</strong> Pushing confirmed defects into Jira or GitHub
+        Issues instead of keeping them only in the built-in tracker.</li>
+        <li><strong>Distributed crawling</strong>, splitting a large site across several workers to
+        keep audit times reasonable on sites of thousands of pages.</li>
+        <li><strong>Self-healing selectors that learn.</strong> The steps engine already tries several
+        strategies to find an element; recording which one succeeded would let it adapt to a
+        redesigned interface instead of merely surviving one.</li>
+      </ul>
+    </div>
+
+    <p>Taken together these would move the platform from a working single-user tool to something a
+    team could rely on continuously. The foundations for most of them are already in place, which is
+    the more useful outcome of the work: the architecture did not have to be worked around to
+    identify any of the above.</p>
+  </section>
+
+  <footer>
+    QA Platform &middot; Chapter 6 of the project report<br>
+    All figures measured from the working system. Limitations are stated from the code as it
+    currently stands, not from intent.
+  </footer>
+
+</div>

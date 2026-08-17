@@ -7,6 +7,7 @@ import TestCases from './pages/TestCases';
 import BugTracker from './pages/BugTracker';
 import AIAssistant from './pages/AIAssistant';
 import Reports from './pages/Reports';
+import Admin from './pages/Admin';
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
         <Route path="/bugs" element={<BugTracker />} />
         <Route path="/ai-assistant" element={<AIAssistant />} />
         <Route path="/reports" element={<Reports />} />
+        <Route path="/admin" element={<Admin />} />
       </Routes>
     </BrowserRouter>
   );

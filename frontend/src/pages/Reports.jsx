@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { API_BASE } from '../config';
 import {
   LineChart, Line,
   BarChart, Bar,
@@ -57,7 +56,14 @@ const ChartCard = ({ title, Icon, note, hasData, children }) => (
 const Reports = () => {
   const navigate = useNavigate();
 
+  // Two different states, deliberately. `loading` is the very first load, when
+  // there is genuinely nothing to show yet. `refreshing` is every load after
+  // that, where the previous numbers are still on screen and still true.
+  // Collapsing them into one is what made every refresh feel like a page
+  // reload: the whole dashboard was unmounted and rebuilt to fetch the same
+  // shape of data, so charts flashed and scroll position was lost.
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [summary, setSummary] = useState(null);
   const [healthTrend, setHealthTrend] = useState([]);
   const [bugBreakdown, setBugBreakdown] = useState({ by_status: [], by_severity: [] });
@@ -76,7 +82,8 @@ const Reports = () => {
     }
 
     const loadAllReports = async () => {
-      setLoading(true);
+      // Only blank the screen when there is nothing on it yet.
+      setRefreshing(true);
       try {
         const [s, h, b, c, p, r] = await Promise.all([
           getSummary(),
@@ -87,11 +94,20 @@ const Reports = () => {
           getRecentRuns(),
         ]);
         setSummary(s.data);
-        setHealthTrend(h.data);
-        setBugBreakdown(b.data);
-        setTopCategories(c.data);
-        setPassRate(p.data);
-        setRecentRuns(r.data);
+        // Guard every list at the boundary. The charts call .length and .map
+        // on these, so a single endpoint returning null or an unexpected
+        // shape used to take the entire dashboard down with it. One panel
+        // having no data is not a reason to lose the other five.
+        const list = (value) => (Array.isArray(value) ? value : []);
+
+        setHealthTrend(list(h.data));
+        setBugBreakdown({
+          by_status: list(b.data?.by_status),
+          by_severity: list(b.data?.by_severity),
+        });
+        setTopCategories(list(c.data));
+        setPassRate(list(p.data));
+        setRecentRuns(list(r.data));
       } catch (error) {
         if (error.response?.status === 401) {
           localStorage.clear();
@@ -101,6 +117,7 @@ const Reports = () => {
         }
       } finally {
         setLoading(false);
+        setRefreshing(false);
       }
     };
 
@@ -110,7 +127,8 @@ const Reports = () => {
   const handleExportPDF = async () => {
     setExportingPdf(true);
     try {
-      const response = await fetch(`${API_BASE}/reports/export-pdf`, {
+      const baseUrl = 'http://127.0.0.1:5000/api';
+      const response = await fetch(`${baseUrl}/reports/export-pdf`, {
         headers: {
           Authorization: 'Bearer ' + localStorage.getItem('token'),
         },
@@ -169,6 +187,8 @@ const Reports = () => {
   };
   const legendStyle = { fontSize: 12, color: '#94a3b8' };
 
+  // Only the very first load gets the empty screen. Every refresh after that
+  // keeps the dashboard mounted so charts, scroll position and focus survive.
   if (loading) {
     return (
       <div className="relative flex min-h-screen text-slate-200">
@@ -200,7 +220,17 @@ const Reports = () => {
         >
           <div>
             <h1 className="text-3xl font-display font-bold text-white">Reports &amp; Analytics</h1>
-            <p className="text-slate-400 mt-1">Insights from your testing activity</p>
+            <p className="text-slate-400 mt-1 flex items-center gap-2">
+              Insights from your testing activity
+              {/* A quiet marker instead of tearing the dashboard down. The
+                  numbers on screen stay readable while the new ones arrive. */}
+              {refreshing && (
+                <span role="status" aria-live="polite"
+                  className="inline-flex items-center gap-1.5 text-xs text-brand-sky">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Updating
+                </span>
+              )}
+            </p>
           </div>
           <div className="flex gap-3">
             <button

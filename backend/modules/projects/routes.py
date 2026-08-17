@@ -1,5 +1,4 @@
 import os
-import shutil
 import logging
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -11,7 +10,7 @@ logger = logging.getLogger(__name__)
 projects_bp = Blueprint('projects', __name__)
 mysql = None
 
-UPLOAD_BASE = os.path.join('static', 'uploads', 'projects')  # legacy upload dirs, cleaned on delete
+ALLOWED_ENVS = {'dev', 'staging', 'prod'}
 SESSIONS_DIR = os.path.join('static', 'uploads', 'sessions')
 
 
@@ -33,9 +32,7 @@ def _row_to_dict(r):
         'name': r['name'],
         'description': r['description'],
         'base_url': r['base_url'],
-        'source_type': r['source_type'],
-        'requires_login': bool(r['requires_login']) if r.get('requires_login') is not None else False,
-        'upload_path': r['upload_path'],
+        'environment': r['environment'],
         'created_at': r['created_at'].isoformat() if r['created_at'] else None,
         'has_active_session': bool(r['has_active_session']) if r['has_active_session'] is not None else False,
         'session_captured_at': r['session_captured_at'].isoformat() if r['session_captured_at'] else None,
@@ -45,8 +42,7 @@ def _row_to_dict(r):
 def _get_owned(project_id, user_id):
     cur = mysql.connection.cursor()
     cur.execute(
-        """SELECT id, name, description, base_url,
-                  source_type, requires_login, upload_path, created_at,
+        """SELECT id, name, description, base_url, environment, created_at,
                   has_active_session, session_captured_at
            FROM projects
            WHERE id=%s AND user_id=%s""",
@@ -90,8 +86,7 @@ def list_projects():
     
     # Get paginated results
     cur.execute(
-        """SELECT id, name, description, base_url,
-                  source_type, requires_login, upload_path, created_at,
+        """SELECT id, name, description, base_url, environment, created_at,
                   has_active_session, session_captured_at
            FROM projects
            WHERE user_id=%s
@@ -123,19 +118,21 @@ def create_project():
     name = (data.get('name') or '').strip()
     base_url = (data.get('base_url') or '').strip()
     description = (data.get('description') or '').strip()
-    requires_login = 1 if data.get('requires_login') else 0
+    environment = (data.get('environment') or 'dev').strip().lower()
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
     if not (base_url.startswith('http://') or base_url.startswith('https://')):
         return jsonify({'error': 'Valid URL required (http:// or https://)'}), 400
+    if environment not in ALLOWED_ENVS:
+        return jsonify({'error': 'Invalid environment'}), 400
 
     cur = mysql.connection.cursor()
     cur.execute(
         """INSERT INTO projects
-           (user_id, name, description, base_url, source_type, has_active_session, requires_login)
-           VALUES (%s, %s, %s, %s, 'url', FALSE, %s)""",
-        (_uid(), name, description, base_url, requires_login)
+           (user_id, name, description, base_url, environment, has_active_session)
+           VALUES (%s, %s, %s, %s, %s, FALSE)""",
+        (_uid(), name, description, base_url, environment)
     )
     project_id = cur.lastrowid
     mysql.connection.commit()
@@ -155,15 +152,16 @@ def update_project(project_id):
     data = request.get_json() or {}
     name = (data.get('name') or project['name']).strip()
     description = (data.get('description') or '').strip()
-    rl_val = data.get('requires_login', project.get('requires_login'))
-    requires_login = 1 if rl_val else 0
+    environment = (data.get('environment') or project['environment']).strip().lower()
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
+    if environment not in ALLOWED_ENVS:
+        return jsonify({'error': 'Invalid environment'}), 400
 
     new_base_url = project['base_url']
     url_changed = False
-    if project['source_type'] == 'url' and 'base_url' in data:
+    if 'base_url' in data:
         candidate = (data.get('base_url') or '').strip()
         if not (candidate.startswith('http://') or candidate.startswith('https://')):
             return jsonify({'error': 'Valid URL required'}), 400
@@ -177,17 +175,17 @@ def update_project(project_id):
         _clear_session_file(project_id)
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s, requires_login=%s,
+               SET name=%s, description=%s, base_url=%s, environment=%s,
                    has_active_session=FALSE, session_captured_at=NULL
                WHERE id=%s""",
-            (name, description, new_base_url, requires_login, project_id)
+            (name, description, new_base_url, environment, project_id)
         )
     else:
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s, requires_login=%s
+               SET name=%s, description=%s, base_url=%s, environment=%s
                WHERE id=%s""",
-            (name, description, new_base_url, requires_login, project_id)
+            (name, description, new_base_url, environment, project_id)
         )
     mysql.connection.commit()
     cur.close()
@@ -241,9 +239,6 @@ def delete_project(project_id):
     cur.close()
 
     # Best-effort file cleanup
-    project_dir = os.path.join(UPLOAD_BASE, str(project_id))
-    if os.path.isdir(project_dir):
-        shutil.rmtree(project_dir, ignore_errors=True)
     _clear_session_file(project_id)
 
     return jsonify({'message': 'Project deleted'}), 200
@@ -318,8 +313,6 @@ def start_login(project_id):
     project = _get_owned(project_id, _uid())
     if not project:
         return jsonify({'error': 'Project not found'}), 404
-    if project['source_type'] != 'url':
-        return jsonify({'error': 'Login capture is only available for URL projects'}), 400
     if not project['base_url']:
         return jsonify({'error': 'Project has no URL to open'}), 400
 

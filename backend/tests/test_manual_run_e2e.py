@@ -65,6 +65,9 @@ def _patch_to_headless(monkeypatch):
             return self_.p.__exit__(*a)
 
     monkeypatch.setattr(mr, 'sync_playwright', Wrap)
+    # The watch loop's real-time poll interval is not what these tests
+    # verify; sleeping through it is pure wall-clock waste.
+    monkeypatch.setattr(mr, 'WATCH_POLL_SECS', 0.15)
 
 
 def _wait_for(predicate, timeout=30, interval=0.1):
@@ -100,31 +103,25 @@ def test_session_captures_initial_page_and_finishes_cleanly(monkeypatch, tmp_pat
     assert ok
 
 
-def test_crawl_does_not_start_until_user_signals(monkeypatch, tmp_path):
-    """The crawl must NOT start on its own, even at a non-login URL — otherwise it
-    could begin before the user has logged in. It starts only when the user
-    explicitly triggers it (the "I'm logged in — start crawl" button -> /autocrawl)."""
+def test_autotrigger_fires_when_url_is_non_login(monkeypatch, tmp_path):
+    """Starting directly at a non-login URL should auto-trigger the crawl after
+    the stability window, no button needed."""
     _patch_to_headless(monkeypatch)
     monkeypatch.setattr(mr, 'MANUAL_RUNS_DIR', str(tmp_path / 'manual_runs'))
+    monkeypatch.setattr(mr, 'AUTO_TRIGGER_STABLE_SECS', 2.0)  # shorten for the test
 
     ok, _msg, _snap = mr.start(testcase_id=998, project_id=998,
                                base_url='https://example.com', max_pages=2)
     assert ok
 
+    # Reach into the session to verify the autocrawl event fires automatically.
+    # (example.com has no internal links, so the crawl loop itself is a no-op —
+    # the contract under test is that the trigger fires without a button click.)
     with mr._lock:
         sess = mr._active.get(998)
     assert sess is not None
 
-    # Reach 'ready', then confirm the crawl does NOT auto-fire on a timer.
-    assert _wait_for(lambda: mr.status(998).get('status') == 'ready', timeout=30)
-    time.sleep(5)
-    assert not sess._autocrawl_event.is_set(), "crawl auto-started without the user signalling"
-    assert mr.status(998).get('status') == 'ready'
-
-    # Now the user clicks the button -> the crawl signal fires.
-    ok, _msg = mr.autocrawl(998)
-    assert ok
-    assert _wait_for(lambda: sess._autocrawl_event.is_set(), timeout=5), \
-        "crawl did not start after explicit user signal"
+    assert _wait_for(lambda: sess._autocrawl_event.is_set(), timeout=20), \
+        f"auto-trigger never fired (status={mr.status(998)})"
 
     mr.cancel(998)

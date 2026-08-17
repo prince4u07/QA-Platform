@@ -10,7 +10,6 @@ POST /api/ai/chat                           - Conversational AI assistant
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from modules.ai.service import analyze_bug, suggest_test_cases, suggest_fix, chat
-from extensions import limiter
 
 ai_bp = Blueprint('ai', __name__)
 mysql = None
@@ -46,7 +45,7 @@ def get_user_project(user_id, project_id):
     """Returns project if user owns it, else None"""
     cursor = mysql.connection.cursor()
     cursor.execute(
-        "SELECT id, name, base_url, description FROM projects WHERE id = %s AND user_id = %s",
+        "SELECT id, name, base_url, description, environment FROM projects WHERE id = %s AND user_id = %s",
         (project_id, user_id)
     )
     result = cursor.fetchone()
@@ -60,7 +59,6 @@ def get_user_project(user_id, project_id):
 
 @ai_bp.route('/analyze-bug/<int:bug_id>', methods=['POST'])
 @jwt_required()
-@limiter.limit("15 per minute;200 per day")
 def analyze_bug_endpoint(bug_id):
     user_id = int(get_jwt_identity())
 
@@ -89,7 +87,6 @@ def analyze_bug_endpoint(bug_id):
 
 @ai_bp.route('/suggest-tests/<int:project_id>', methods=['POST'])
 @jwt_required()
-@limiter.limit("15 per minute;200 per day")
 def suggest_tests_endpoint(project_id):
     user_id = int(get_jwt_identity())
 
@@ -120,7 +117,6 @@ def suggest_tests_endpoint(project_id):
 
 @ai_bp.route('/suggest-fix', methods=['POST'])
 @jwt_required()
-@limiter.limit("15 per minute;200 per day")
 def suggest_fix_endpoint():
     user_id = int(get_jwt_identity())
     data = request.json or {}
@@ -155,7 +151,6 @@ def suggest_fix_endpoint():
 
 @ai_bp.route('/chat', methods=['POST'])
 @jwt_required()
-@limiter.limit("20 per minute;300 per day")
 def chat_endpoint():
     user_id = int(get_jwt_identity())
     data = request.json or {}

@@ -1,0 +1,495 @@
+<title>QA Platform Testing Approach</title>
+<style>
+  /* Committed single visual world: true black ground, white primary text.
+     Every colour is painted explicitly so the page holds on any host ground.
+     A print block at the end inverts it for paper submission. */
+  :root {
+    --ground:  #000000;
+    --panel:   #0a0c0e;
+    --line:    #1e2226;
+    --line-lo: #131719;
+    --text:    #ffffff;
+    --muted:   #8a929b;
+    --dim:     #5c646d;
+    --pass:    #3fb950;
+    --warn:    #d29922;
+
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  /* ---------- masthead ---------- */
+
+  header { padding: 64px 0 0; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--pass);
+    margin: 0 0 14px;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 5vw, 2.6rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.1;
+    text-wrap: balance;
+    margin: 0 0 18px;
+  }
+
+  .meta {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .meta b { color: var(--text); font-weight: 500; }
+
+  /* ---------- headline numbers ---------- */
+
+  .figures {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 40px 0 8px;
+  }
+  .fig { background: var(--ground); padding: 18px 18px 16px; }
+  .fig .n {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    display: block;
+  }
+  .fig .n.ok { color: var(--pass); }
+  .fig .l {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-top: 9px;
+    display: block;
+  }
+
+  .stamp {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    margin: 0 0 56px;
+  }
+
+  /* ---------- sections ---------- */
+
+  section { margin: 0 0 46px; }
+
+  h2 {
+    font-size: 1.05rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+    padding-top: 26px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--pass);
+    letter-spacing: 0.04em;
+    flex: none;
+  }
+
+  p { margin: 12px 0; max-width: 68ch; color: #e9edf1; }
+  p.lead { color: var(--text); }
+
+  strong { font-weight: 600; color: var(--text); }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line-lo);
+    padding: 1px 5px;
+  }
+
+  /* ---------- tables ---------- */
+
+  .scroll { overflow-x: auto; margin: 18px 0; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    min-width: 560px;
+  }
+  th, td {
+    text-align: left;
+    padding: 9px 14px 9px 0;
+    border-bottom: 1px solid var(--line-lo);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    border-bottom: 1px solid var(--line);
+    padding-top: 0;
+  }
+  td.n {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    padding-right: 22px;
+    white-space: nowrap;
+  }
+  th.n { text-align: right; padding-right: 22px; }
+  td.f { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  td.d { color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  tfoot td {
+    border-top: 1px solid var(--line);
+    border-bottom: none;
+    font-weight: 600;
+    padding-top: 11px;
+  }
+
+  /* ---------- named test examples ---------- */
+
+  ul.tests {
+    list-style: none;
+    margin: 14px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  ul.tests li {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--muted);
+    padding-left: 18px;
+    position: relative;
+    word-break: break-word;
+  }
+  ul.tests li::before {
+    content: "✓";
+    position: absolute;
+    left: 0;
+    color: var(--pass);
+  }
+
+  /* ---------- defect entries ---------- */
+
+  .defect { padding: 18px 0; border-bottom: 1px solid var(--line-lo); }
+  .defect:last-of-type { border-bottom: none; }
+  .defect h3 {
+    font-size: 14.5px;
+    font-weight: 600;
+    margin: 0 0 6px;
+  }
+  .defect p { margin: 6px 0; font-size: 13.5px; }
+  .defect .caught {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--pass);
+    margin-top: 8px;
+    display: block;
+    word-break: break-word;
+  }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 16px 0;
+    line-height: 1.55;
+  }
+  pre .c { color: var(--dim); }
+  pre .g { color: var(--pass); }
+
+  .limits li { color: var(--muted); margin-bottom: 9px; max-width: 68ch; }
+  .limits { padding-left: 20px; }
+  .limits li::marker { color: var(--warn); }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    line-height: 1.7;
+  }
+
+  a { color: var(--pass); }
+  a:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--pass);
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 560px) {
+    body { padding: 0 18px 64px; font-size: 14.5px; }
+    header { padding-top: 44px; }
+  }
+
+  /* Paper submission: invert to black-on-white, drop the panels. */
+  @media print {
+    :root {
+      --ground: #ffffff; --panel: #f6f7f8; --line: #c8ccd0; --line-lo: #e3e6e8;
+      --text: #000000; --muted: #3d4348; --dim: #5c646d; --pass: #1a7f37;
+    }
+    body { padding: 0; font-size: 11pt; }
+    .fig, .figures { background: #ffffff; }
+    p { color: #000000; }
+    section { break-inside: avoid; }
+    h2 { break-after: avoid; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Project Synopsis &middot; Section 5.3</p>
+    <h1>Testing Approach</h1>
+    <ul class="meta">
+      <li><b>QA Platform</b></li>
+      <li>Prince Kumar Vishwakarma</li>
+      <li>UID 24BIT062</li>
+    </ul>
+  </header>
+
+  <div class="figures">
+    <div class="fig"><span class="n ok">112</span><span class="l">Tests passing</span></div>
+    <div class="fig"><span class="n">0</span><span class="l">Failing</span></div>
+    <div class="fig"><span class="n">9</span><span class="l">Test files</span></div>
+    <div class="fig"><span class="n">80s</span><span class="l">Full run</span></div>
+  </div>
+  <p class="stamp">Recorded 13 August 2026 &middot; Python 3.13.0 &middot; pytest 9.0.3 &middot; Playwright 1.59 (Chromium) &middot; MySQL 8.0</p>
+
+  <section>
+    <p class="lead">A platform whose purpose is finding defects has to be able to show that it works. The
+    testing strategy is therefore built on execution rather than description: every claim below
+    corresponds to a test that runs on demand and either passes or fails.</p>
+    <p>Testing is organised in four layers, each answering a different question. The first three are
+    separated by how much of the real system they exercise. The fourth cuts across all of them.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.1</span> Unit testing</h2>
+    <p><strong>Question: is each rule correct in isolation?</strong> The analysis engine is built from
+    pure functions, which makes them testable without a browser or a database. Findings are fed in as
+    controlled inputs and the output is checked exactly. 77 tests, running in under a second.</p>
+    <p>This layer covers severity grading, the health score, the regression comparison, the performance
+    thresholds and the parser that turns written steps into browser actions.</p>
+    <ul class="tests">
+      <li>test_worse_site_always_scores_lower_than_bad_site</li>
+      <li>test_critical_finding_costs_more_than_a_minor_one</li>
+      <li>test_finding_severity_uses_the_value_the_check_assigned</li>
+      <li>test_first_run_is_a_baseline_not_a_regression</li>
+      <li>test_url_assertion_beats_the_generic_text_assertion</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.2</span> Integration testing</h2>
+    <p><strong>Question: do the parts work once assembled?</strong> These exercise the Flask
+    application itself: routing, authentication, rate limiting, error handling and the background job
+    manager that keeps the interface responsive during a crawl. 8 tests.</p>
+    <ul class="tests">
+      <li>test_key_routes_registered</li>
+      <li>test_login_rate_limit_trips_429</li>
+      <li>test_job_runs_to_done</li>
+      <li>test_job_marks_failed_on_error_code</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.3</span> Real-target testing</h2>
+    <p><strong>Question: does it hold up against a real browser and a real site?</strong> The most
+    important layer. A disposable HTTP server is started inside the test, serving pages with genuine
+    defects built in: a link that returns 404, an oversized script, a button with no label, a login form
+    that only accepts one password. A real Chromium browser is then driven against it. 27 tests.</p>
+    <p>Because the target is generated by the test itself, results are exact and repeatable, and no
+    external website is depended upon.</p>
+    <ul class="tests">
+      <li>test_a_real_login_workflow_runs_end_to_end</li>
+      <li>test_a_wrong_password_is_caught_as_a_functional_failure</li>
+      <li>test_performance_measures_a_real_page</li>
+      <li>test_every_finding_carries_a_severity</li>
+      <li>test_a_multi_page_workflow_crosses_pages</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.4</span> Error handling</h2>
+    <p><strong>Question: what happens when something goes wrong?</strong> A testing tool that crashes on
+    a hostile page is worse than useless, so failure paths are tested as deliberately as success paths.
+    These tests are distributed across the three layers above rather than kept separately.</p>
+    <p>Covered: a database that is switched off, a page that blocks measurement, a screenshot that
+    cannot be written, a workflow step that breaks halfway, a test case deleted while its crawl is
+    running, an expired login session, and navigation inside a single-page application.</p>
+    <ul class="tests">
+      <li>test_database_being_down_says_so_instead_of_internal_server_error</li>
+      <li>test_a_genuine_bug_is_still_a_500_and_leaks_nothing</li>
+      <li>test_performance_survives_a_page_that_blocks_evaluate</li>
+      <li>test_a_broken_screenshot_callback_does_not_fail_the_step</li>
+      <li>test_steps_after_a_break_are_skipped_not_re_reported</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.5</span> Coverage by module</h2>
+    <p>Every test file, what it verifies, and which layer it belongs to.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Test file</th>
+            <th class="n">Tests</th>
+            <th>Layer</th>
+            <th>What it verifies</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="f">test_runner_helpers.py</td><td class="n">32</td><td class="d">Unit</td>
+            <td class="d">Health score, severity, regression diff, performance thresholds, coverage reporting</td>
+          </tr>
+          <tr>
+            <td class="f">test_manual_workspace.py</td><td class="n">22</td><td class="d">Unit</td>
+            <td class="d">Tester checklist, reported issues, page limits, run verdict</td>
+          </tr>
+          <tr>
+            <td class="f">test_steps.py</td><td class="n">20</td><td class="d">Unit</td>
+            <td class="d">Step parsing and workflow execution order</td>
+          </tr>
+          <tr>
+            <td class="f">test_manual_run_e2e.py</td><td class="n">15</td><td class="d">Real-target</td>
+            <td class="d">Manual session lifecycle, page capture, auto-trigger</td>
+          </tr>
+          <tr>
+            <td class="f">test_page_checks_e2e.py</td><td class="n">6</td><td class="d">Real-target</td>
+            <td class="d">All six checks against a live Chromium page</td>
+          </tr>
+          <tr>
+            <td class="f">test_steps_e2e.py</td><td class="n">6</td><td class="d">Real-target</td>
+            <td class="d">Login and checkout workflows in a real browser</td>
+          </tr>
+          <tr>
+            <td class="f">test_app.py</td><td class="n">5</td><td class="d">Integration</td>
+            <td class="d">Routing, error handlers, rate limiting</td>
+          </tr>
+          <tr>
+            <td class="f">test_jobs.py</td><td class="n">3</td><td class="d">Integration</td>
+            <td class="d">Background crawl workers</td>
+          </tr>
+          <tr>
+            <td class="f">test_session_capture.py</td><td class="n">3</td><td class="d">Unit</td>
+            <td class="d">Login session origin handling</td>
+          </tr>
+        </tbody>
+        <tfoot>
+          <tr><td>Total</td><td class="n">112</td><td></td><td></td></tr>
+        </tfoot>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.6</span> Defects found by this process</h2>
+    <p>Tests were written from the requirement and confirmed to fail against the unfixed code before
+    the fix was made. Two examples where this caught defects that manual inspection had missed.</p>
+
+    <div class="defect">
+      <h3>The health score was unusable for tracking quality</h3>
+      <p>The score was calculated as <code>100 - (issue count &times; weight)</code>, clamped at zero. Any
+      real website reached zero immediately, so a site with 20 problems and a site with 200 scored
+      identically. This defeated the objective of tracking quality across releases.</p>
+      <p>Replaced with a severity-weighted model using diminishing returns. The same three sites now
+      score 80, 57 and 39 instead of 0, 0 and 0.</p>
+      <span class="caught">Caught by: test_worse_site_always_scores_lower_than_bad_site</span>
+    </div>
+
+    <div class="defect">
+      <h3>Manual runs could never crawl beyond the opening page</h3>
+      <p>The page limit for manual test cases was stored as 1. Since the landing page is captured before
+      crawling begins, the loop condition <code>pages &lt; limit</code> was already false and the crawl
+      exited without visiting a single additional page.</p>
+      <p>A stored limit of 1 is now treated as unset, and the limit is exposed in the interface for both
+      test types.</p>
+      <span class="caught">Caught by: test_a_manual_run_can_crawl_past_the_landing_page</span>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.7</span> Reproducing these results</h2>
+    <p>The full suite runs from the backend directory with a single command and needs no database, no
+    network access and no configuration.</p>
+<pre><span class="c"># from backend/</span>
+python -m pytest
+
+<span class="c">............................................................ [100%]</span>
+<span class="g">112 passed in 79.80s</span></pre>
+    <p>The database layer is verified separately by replaying the application's actual SQL statements
+    against MySQL 8.0 inside a transaction that is rolled back, which confirms the schema matches the
+    queries without leaving any test data behind.</p>
+  </section>
+
+  <section>
+    <h2><span class="num">5.3.8</span> Limits of the current suite</h2>
+    <p>Stated plainly, since knowing what is not covered matters as much as knowing what is.</p>
+    <ul class="limits">
+      <li>The React interface has no unit tests. It is verified by static analysis and a successful
+      production build, which catches broken references but not incorrect behaviour.</li>
+      <li>A manual run against a real logged-in website has not been automated. It requires a visible
+      browser and live credentials, so it is exercised by hand.</li>
+      <li>Accessibility results depend on axe-core. Its correctness is assumed rather than retested;
+      what is tested is that its severity ratings are carried through to the score correctly.</li>
+      <li>No load or concurrency testing has been done. Crawls are limited to two background workers,
+      which has not been stressed beyond ordinary use.</li>
+    </ul>
+  </section>
+
+  <footer>
+    QA Platform &middot; Section 5.3 of the project synopsis<br>
+    Figures recorded from an actual test run on 13 August 2026. No results are estimated.
+  </footer>
+
+</div>
