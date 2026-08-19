@@ -22,10 +22,6 @@ export const createTestCase = (data) =>
 export const updateTestCase = (id, data) =>
   axios.put(`${API_URL}/${id}`, data, getAuthHeader());
 
-// Quick status change
-export const updateTestCaseStatus = (id, status) =>
-  axios.patch(`${API_URL}/${id}/status`, { status }, getAuthHeader());
-
 // Delete
 export const deleteTestCase = (id) =>
   axios.delete(`${API_URL}/${id}`, getAuthHeader());
