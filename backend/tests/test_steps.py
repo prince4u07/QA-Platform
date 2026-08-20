@@ -50,7 +50,7 @@ def test_url_assertion_beats_the_generic_text_assertion():
 
 def test_parses_the_text_assertion_wordings():
     for line in ('Expect text Welcome back', 'I should see Welcome back',
-                 'Verify Welcome back', 'See Welcome back'):
+                 'Verify text Welcome back', 'Expect "Welcome back"'):
         step = parse_step(line)
         assert step['action'] == 'expect_text', line
         assert 'Welcome back' in step['value'], line
@@ -237,3 +237,31 @@ def test_summary_of_no_steps_is_not_a_pass():
     summary = summarise_steps([])
     assert summary['workflow_completed'] is False
     assert summary['total'] == 0
+
+
+def test_prose_is_not_silently_read_as_an_assertion():
+    """
+    These are instructions written for a person. Read as assertions they can
+    never pass, and a failed step is reported as a critical defect in the
+    site, which is the worst kind of false positive this runner can produce.
+    """
+    for line in ('check all validations on empty field',
+                 'and check all butttons and function should be running properly',
+                 'verify the payment flow works end to end',
+                 'see if the dashboard loads'):
+        assert parse_step(line)['action'] == 'unknown', line
+
+
+def test_quoting_makes_a_bare_assertion_unambiguous():
+    """Quotes say "these exact words", which is not a guess."""
+    step = parse_step('Verify "Order confirmed"')
+
+    assert step['action'] == 'expect_text'
+    assert step['value'] == 'Order confirmed'
+
+
+def test_the_documented_assertion_forms_all_still_work():
+    """These are the forms the UI actually tells people to use."""
+    assert parse_step('Expect text Welcome back')['action'] == 'expect_text'
+    assert parse_step('Expect url contains /dashboard')['action'] == 'expect_url'
+    assert parse_step('I should see Welcome back')['action'] == 'expect_text'
