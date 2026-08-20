@@ -1007,11 +1007,44 @@ def score_breakdown(findings_by_category):
     return breakdown
 
 
-def calculate_health_score(findings_by_category):
-    """Weighted average of the per-category subscores. Always 1..100."""
+def measured_categories(step_summary=None, mobile_checked=True):
+    """
+    The categories a run actually measured.
+
+    A category that was never checked has no findings, and the weighted
+    average read that as a perfect result. That rewarded not looking: an
+    authenticated crawl skips the mobile checks and used to collect full
+    marks for them anyway, and a run where no step ever executed banked the
+    whole functional weight, the largest of the nine.
+
+    Mobile counts as measured unless the crawl skipped it. Functional counts
+    only once at least one step actually executed, because steps the runner
+    could not read never ran and so verify nothing about the site.
+    """
+    measured = set(CATEGORY_WEIGHT)
+    if not mobile_checked:
+        measured.discard('mobile_issues')
+    summary = step_summary or {}
+    executed = summary.get('passed', 0) + summary.get('failed', 0)
+    if not executed:
+        measured.discard('functional_issues')
+    return measured
+
+
+def calculate_health_score(findings_by_category, measured=None):
+    """
+    Weighted average of the per-category subscores. Always 1..100.
+
+    `measured` names the categories this run actually checked. Anything
+    outside it is left out of the average rather than counted as perfect,
+    because a check that never ran is not a check that passed. Passing
+    nothing keeps the original behaviour of scoring all nine.
+    """
     total_weight = 0
     weighted_sum = 0
     for category, weight in CATEGORY_WEIGHT.items():
+        if measured is not None and category not in measured:
+            continue
         items = findings_by_category.get(category) or []
         weighted_sum += weight * category_subscore(category, items)
         total_weight += weight
@@ -1036,6 +1069,7 @@ def summarise_coverage(all_pages_coverage):
     page_size_max = 0
     request_total = 0
     unmeasured_total = 0
+    steps_total = steps_unreadable = 0
 
     for cov in all_pages_coverage or []:
         perf = cov.get('performance') or {}
@@ -1054,6 +1088,10 @@ def summarise_coverage(all_pages_coverage):
         taps_found += mob.get('tap_targets_found', 0)
         taps_checked += mob.get('tap_targets_checked', 0)
         taps_truncated = taps_truncated or mob.get('truncated', False)
+
+        steps = cov.get('steps') or {}
+        steps_total += steps.get('total', 0)
+        steps_unreadable += steps.get('unreadable', 0)
 
         if cov.get('mobile_skipped_reason'):
             mobile_skipped_reason = cov['mobile_skipped_reason']
@@ -1078,6 +1116,12 @@ def summarise_coverage(all_pages_coverage):
             f'limited accessibility check was used there. Real accessibility '
             f'problems may have been missed.'
         )
+    if steps_unreadable:
+        notes.append(
+            f'{steps_unreadable} of {steps_total} written step(s) could not be '
+            f'understood, so that part of the workflow was never exercised. '
+            f'Rewording them would test more of the site.'
+        )
     if unmeasured_total:
         notes.append(
             f'{unmeasured_total} resource(s) would not report their size, which '
@@ -1099,6 +1143,8 @@ def summarise_coverage(all_pages_coverage):
         'page_size_kb_heaviest': page_size_max,
         'request_count': request_total,
         'unmeasured_resources': unmeasured_total,
+        'steps_total': steps_total,
+        'steps_unreadable': steps_unreadable,
     }
 
 
@@ -2222,6 +2268,7 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         page_load_ms=page_load_ms)
                     if page_idx == 0:
                         page_findings['functional_issues'] = step_findings
+                        page_coverage['steps'] = step_summary
                     page_findings = tag_findings_with_page(page_findings, page_url)
                     all_pages_coverage.append(page_coverage)
 
@@ -2264,7 +2311,14 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                             logger.warning("crawl link-discovery error: %s", e)
 
                     page_issues_found = sum(len(items) for items in page_findings.values())
-                    page_health_score = calculate_health_score(page_findings)
+                    # Steps only ever run on the first page, so every later
+                    # page would otherwise collect the functional weight in
+                    # full for a check that never happened there.
+                    page_health_score = calculate_health_score(
+                        page_findings,
+                        measured=measured_categories(
+                            step_summary if page_idx == 0 else None,
+                            mobile_checked=not session_used))
 
                     all_pages_findings.append(page_findings)
                     per_page_records.append({
@@ -2314,7 +2368,10 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 for category, items in merged_findings.items()
             }
 
-            health_score = calculate_health_score(merged_findings)
+            health_score = calculate_health_score(
+                merged_findings,
+                measured=measured_categories(step_summary,
+                                             mobile_checked=not session_used))
             breakdown = score_breakdown(merged_findings)
             coverage_summary = summarise_coverage(all_pages_coverage)
             top_severity = worst_severity(merged_findings)
