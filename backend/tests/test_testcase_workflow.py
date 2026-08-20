@@ -116,3 +116,28 @@ def test_pass_or_fail_cannot_be_set_without_a_run(client):
 
     assert response.status_code == 404
     assert database.connection.cursor_instance.calls == []
+
+
+def test_clicking_controls_is_off_unless_the_test_asks_for_it(client):
+    """
+    The check clicks real buttons on a live site, so the safe default is the
+    only acceptable default.
+    """
+    http, database, headers = client
+
+    response = http.post('/api/testcases', headers=headers, json=testcase())
+
+    assert response.status_code == 201
+    _sql, params = database.connection.cursor_instance.calls[-1]
+    assert params[-1] is False
+
+
+def test_clicking_controls_can_be_switched_on_per_test_case(client):
+    http, database, headers = client
+
+    response = http.post('/api/testcases', headers=headers,
+                         json=testcase(check_dead_controls=True))
+
+    assert response.status_code == 201
+    _sql, params = database.connection.cursor_instance.calls[-1]
+    assert params[-1] is True

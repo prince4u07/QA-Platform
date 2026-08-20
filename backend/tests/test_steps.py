@@ -189,7 +189,9 @@ def test_unreadable_step_is_flagged_but_does_not_stop_the_run():
     results, findings = run_steps(page, 'do a barrel roll\nClick Sign in')
     assert results[0]['status'] == 'unreadable'
     assert results[1]['status'] == 'passed'          # the run carried on
-    assert findings[0]['severity'] == 'moderate'     # a typo is not a broken feature
+    # A typo never reached the site, so it is reported to its author
+    # through `results` rather than scored against the site.
+    assert findings == []
 
 
 def test_relative_goto_is_resolved_against_the_project_url():

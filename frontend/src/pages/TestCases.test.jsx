@@ -121,4 +121,41 @@ describe('Test case workflow', () => {
       crawl_pages: true,
     }));
   });
+
+  it('leaves control clicking off unless it is switched on', async () => {
+    const user = userEvent.setup();
+    renderPage([]);
+    await screen.findByText(/no test cases yet/i);
+
+    await user.click(screen.getByRole('button', { name: /new test case/i }));
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole('button', { name: /create test case/i }));
+
+    await waitFor(() => expect(testcasesApi.createTestCase).toHaveBeenCalled());
+    expect(testcasesApi.createTestCase).toHaveBeenCalledWith(expect.objectContaining({
+      check_dead_controls: false,
+    }));
+  });
+
+  it('says what clicking controls will do before you switch it on', async () => {
+    const user = userEvent.setup();
+    renderPage([]);
+    await screen.findByText(/no test cases yet/i);
+
+    await user.click(screen.getByRole('button', { name: /new test case/i }));
+
+    const optIn = screen.getByRole('checkbox', { name: /click controls/i });
+    expect(optIn).not.toBeChecked();
+    expect(screen.getByText(/skips anything inside a form/i)).toBeInTheDocument();
+
+    await fillRequiredFields(user);
+    await user.click(optIn);
+    await user.click(screen.getByRole('button', { name: /create test case/i }));
+
+    await waitFor(() => expect(testcasesApi.createTestCase).toHaveBeenCalled());
+    expect(testcasesApi.createTestCase).toHaveBeenCalledWith(expect.objectContaining({
+      check_dead_controls: true,
+    }));
+  });
 });
+

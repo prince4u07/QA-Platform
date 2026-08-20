@@ -140,6 +140,9 @@ def create_testcase():
         max_pages = 1
     if max_pages > 100:
         max_pages = 100
+    # Clicking controls on a live site can submit a form or log the crawler
+    # out, so it only ever happens when the test case asks for it.
+    check_dead_controls = bool(data.get('check_dead_controls', False))
 
     try:
         cursor = mysql.connection.cursor()
@@ -147,11 +150,12 @@ def create_testcase():
             """INSERT INTO test_cases (
                 project_id, title, description, steps, expected_result,
                 priority, status, test_type, automation_framework,
-                test_purpose, crawl_pages, max_pages, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                test_purpose, crawl_pages, max_pages,
+                check_dead_controls, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
             (project_id, title, description, steps, expected_result,
              priority, 'Pending', test_type, automation_framework,
-             test_purpose, crawl_pages, max_pages)
+             test_purpose, crawl_pages, max_pages, check_dead_controls)
         )
         mysql.connection.commit()
         tc_id = cursor.lastrowid
@@ -196,6 +200,7 @@ def update_testcase(tc_id):
         max_pages = 1
     if max_pages > 100:
         max_pages = 100
+    check_dead_controls = bool(data.get('check_dead_controls', False))
 
     try:
         cursor = mysql.connection.cursor()
@@ -203,7 +208,8 @@ def update_testcase(tc_id):
             """UPDATE test_cases SET
                 title = %s, description = %s, steps = %s, expected_result = %s,
                 priority = %s, test_type = %s, automation_framework = %s,
-                test_purpose = %s, crawl_pages = %s, max_pages = %s
+                test_purpose = %s, crawl_pages = %s, max_pages = %s,
+                check_dead_controls = %s
                 WHERE id = %s""",
             (
                 title,
@@ -213,7 +219,7 @@ def update_testcase(tc_id):
                 test_type,
                 automation_framework,
                 test_purpose,
-                crawl_pages, max_pages,
+                crawl_pages, max_pages, check_dead_controls,
                 tc_id
             )
         )

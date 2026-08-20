@@ -47,7 +47,7 @@ class FakeElement:
         # The checks ask for computed style; the _safe_* selector helpers ask
         # for other things and tolerate anything falsy.
         if 'getComputedStyle' in script:
-            return self.display
+            return {'tag': self.tag.lower(), 'display': self.display}
         if 'nodeName' in script:
             return self.tag
         return ''
@@ -925,3 +925,324 @@ def test_coverage_is_quiet_when_every_step_ran():
     ])
 
     assert cov['complete'] is True
+
+
+# ============================================================
+# 17. A broken tool is not the site improving
+# ============================================================
+
+from modules.runner.steps import run_steps  # noqa: E402
+
+
+def test_accessibility_is_unmeasured_when_axe_never_ran():
+    ran = summarise_steps([{'index': 0, 'status': 'passed'}])
+
+    measured = measured_categories(ran, mobile_checked=True,
+                                   accessibility_measured=False)
+
+    assert 'accessibility_issues' not in measured
+
+
+def test_a_failed_accessibility_engine_cannot_raise_the_score():
+    """
+    The heuristic fallback finds far less than axe, so when the engine broke
+    the run produced fewer findings and the score went up. A tool failing is
+    not the site getting better.
+    """
+    ran = summarise_steps([{'index': 0, 'status': 'passed'}])
+    site = damaged_site()
+
+    with_axe = calculate_health_score(
+        site, measured=measured_categories(ran, True, accessibility_measured=True))
+    engine_broke = calculate_health_score(
+        site, measured=measured_categories(ran, True, accessibility_measured=False))
+
+    assert engine_broke < with_axe
+
+
+def test_accessibility_still_counts_when_axe_ran():
+    ran = summarise_steps([{'index': 0, 'status': 'passed'}])
+
+    measured = measured_categories(ran, mobile_checked=True,
+                                   accessibility_measured=True)
+
+    assert 'accessibility_issues' in measured
+
+
+# ============================================================
+# 18. Coverage caps high enough to mean something
+# ============================================================
+
+def test_a_link_heavy_page_is_covered_not_sampled(monkeypatch):
+    """
+    The old cap stopped at 30 links per page, so a page with 80 links was
+    mostly unchecked and "no broken links" meant very little.
+    """
+    session = RecordingSession()
+    use_session(monkeypatch, session)
+
+    _findings, coverage = check_broken_links(
+        FakeLinkPage(['/page%d' % i for i in range(80)]), 'https://site.com/')
+
+    assert coverage['links_checked'] == 80
+    assert coverage['truncated'] is False
+
+
+def test_a_page_with_many_tap_targets_is_covered(monkeypatch):
+    page = FakeMobilePage(390, 390, [small_button('b%d' % i) for i in range(120)])
+
+    _findings, coverage = check_mobile(page)
+
+    assert coverage['tap_targets_checked'] == 120
+    assert coverage['truncated'] is False
+
+
+def test_a_genuinely_enormous_page_is_still_capped_and_says_so(monkeypatch):
+    """The cap has to stay, or one page can hold up the whole crawl."""
+    session = RecordingSession()
+    use_session(monkeypatch, session)
+
+    _findings, coverage = check_broken_links(
+        FakeLinkPage(['/page%d' % i for i in range(500)]), 'https://site.com/')
+
+    assert coverage['truncated'] is True
+    assert coverage['links_found'] == 500
+    assert coverage['links_checked'] < 500
+
+
+# ============================================================
+# 19. A badly written step is not a defect in the site
+# ============================================================
+
+def test_an_unreadable_step_is_not_charged_against_the_site():
+    """
+    "check all validations on empty field" is a badly worded step, not a bug
+    in the site under test. It is still reported to the author through the
+    step record and the coverage note, but it no longer scores against the
+    site, which never had a chance to fail it.
+    """
+    results, findings = run_steps(
+        None, 'and check all butttons and function should be running properly',
+        'https://site.com/')
+
+    assert results[0]['status'] == 'unreadable'
+    assert findings == []
+
+
+def test_the_unreadable_step_is_still_visible_to_whoever_wrote_it():
+    results, _findings = run_steps(
+        None, 'i lareday login', 'https://site.com/')
+
+    assert 'could not' in results[0]['message'].lower() or results[0]['detail']
+
+
+# ============================================================
+# 20. Dead controls: a button that does nothing at all
+# ============================================================
+
+from modules.runner.routes import check_dead_controls  # noqa: E402
+
+
+class FakeControl:
+    """A clickable thing, with whatever it does to the page when clicked."""
+
+    def __init__(self, label='Show more', tag='button', in_form=False,
+                 disabled=False, attrs=None, effect=None):
+        self.label = label
+        self.tag = tag
+        self.in_form = in_form
+        self.disabled = disabled
+        self._attrs = attrs or {}
+        self.effect = effect
+        self.clicked = False
+
+    def inner_text(self):
+        return self.label
+
+    def get_attribute(self, name):
+        if name == 'aria-label':
+            return self._attrs.get('aria-label')
+        return self._attrs.get(name)
+
+    def is_enabled(self):
+        return not self.disabled
+
+    def bounding_box(self):
+        return {'x': 0, 'y': 0, 'width': 80, 'height': 30}
+
+    def evaluate(self, script):
+        if 'closest' in script:
+            return self.in_form
+        if 'getComputedStyle' in script:
+            return {'tag': self.tag, 'display': 'inline-block'}
+        if 'nodeName' in script:
+            return self.tag
+        return ''
+
+    def click(self, **_kwargs):
+        self.clicked = True
+        if self.effect:
+            self.effect()
+
+
+class FakeControlPage:
+    def __init__(self, controls, url='https://site.com/page'):
+        self.controls = controls
+        self.state = {'url': url, 'html': 5000, 'nodes': 120,
+                      'requests': 3, 'storage': 1}
+        self.goto_calls = []
+
+    def query_selector_all(self, _selector):
+        return self.controls
+
+    def evaluate(self, script):
+        if 'location.href' in script:
+            return dict(self.state)
+        return None
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def goto(self, url, **_kwargs):
+        self.goto_calls.append(url)
+        self.state['url'] = url
+
+
+def alive(page, key='nodes'):
+    """An effect that changes the page the way a working control would."""
+    def effect():
+        page.state[key] = page.state[key] + 1 if key != 'url' else 'https://site.com/next'
+    return effect
+
+
+def test_a_button_that_changes_nothing_at_all_is_reported():
+    """
+    The blind spot this exists for: a button wired to nothing. No console
+    error, no broken link, nothing else in the platform notices it.
+    """
+    page = FakeControlPage([FakeControl('Show more')])
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert len(findings) == 1
+    assert 'Show more' in findings[0]['display']
+
+
+def test_a_button_that_changes_the_page_is_not_reported():
+    page = FakeControlPage([])
+    control = FakeControl('Show more', effect=alive(page))
+    page.controls = [control]
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert findings == []
+    assert control.clicked is True
+
+
+def test_a_button_that_only_makes_a_network_request_is_alive():
+    """An async control may not touch the DOM before we look."""
+    page = FakeControlPage([])
+    page.controls = [FakeControl('Load data', effect=alive(page, 'requests'))]
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert findings == []
+
+
+def test_a_button_that_only_writes_to_storage_is_alive():
+    page = FakeControlPage([])
+    page.controls = [FakeControl('Toggle dark mode', effect=alive(page, 'storage'))]
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert findings == []
+
+
+def test_a_control_that_navigates_is_alive_and_the_crawl_returns():
+    """Navigating away mid-check must not derail the rest of the crawl."""
+    page = FakeControlPage([])
+    page.controls = [FakeControl('Next', effect=alive(page, 'url'))]
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert findings == []
+    assert page.goto_calls == ['https://site.com/page']
+
+
+# ---- safety: what must never be clicked --------------------------------
+
+def test_a_control_inside_a_form_is_never_clicked():
+    """Clicking inside a form can submit it. Never worth the risk."""
+    control = FakeControl('Go', in_form=True)
+    page = FakeControlPage([control])
+
+    findings, coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert control.clicked is False
+    assert findings == []
+    assert coverage['skipped'] == 1
+
+
+def test_destructive_labels_are_never_clicked():
+    controls = [FakeControl(label) for label in
+                ('Delete account', 'Remove item', 'Pay now', 'Log out',
+                 'Submit order', 'Cancel subscription', 'Reset everything')]
+    page = FakeControlPage(controls)
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert all(c.clicked is False for c in controls)
+    assert findings == []
+
+
+def test_a_destructive_label_in_aria_label_is_also_respected():
+    control = FakeControl('', attrs={'aria-label': 'Delete this row'})
+    page = FakeControlPage([control])
+
+    check_dead_controls(page, 'https://site.com/page')
+
+    assert control.clicked is False
+
+
+def test_a_disabled_control_is_never_clicked_or_reported():
+    """A disabled button doing nothing is correct behaviour, not a defect."""
+    control = FakeControl('Continue', disabled=True)
+    page = FakeControlPage([control])
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert control.clicked is False
+    assert findings == []
+
+
+def test_a_submit_button_is_never_clicked():
+    control = FakeControl('Go', attrs={'type': 'submit'})
+    page = FakeControlPage([control])
+
+    check_dead_controls(page, 'https://site.com/page')
+
+    assert control.clicked is False
+
+
+def test_only_a_bounded_number_of_controls_are_ever_clicked():
+    """One page must not be able to hold up the whole crawl."""
+    controls = [FakeControl('Item %d' % i) for i in range(60)]
+    page = FakeControlPage(controls)
+
+    _findings, coverage = check_dead_controls(page, 'https://site.com/page', cap=15)
+
+    assert sum(1 for c in controls if c.clicked) == 15
+    assert coverage['truncated'] is True
+
+
+def test_a_control_that_cannot_be_clicked_is_not_called_dead():
+    """If the click itself failed we learned nothing, so we claim nothing."""
+    class Unclickable(FakeControl):
+        def click(self, **_kwargs):
+            raise RuntimeError('element is not stable')
+
+    page = FakeControlPage([Unclickable('Flaky')])
+
+    findings, _coverage = check_dead_controls(page, 'https://site.com/page')
+
+    assert findings == []

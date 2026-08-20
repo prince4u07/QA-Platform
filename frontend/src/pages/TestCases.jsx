@@ -461,6 +461,7 @@ const TestCases = () => {
   const [priority, setPriority] = useState('Medium');
   const [testType, setTestType] = useState('manual');
   const [testPurpose, setTestPurpose] = useState('functional');
+  const [checkDeadControls, setCheckDeadControls] = useState(false);
   const [maxPages, setMaxPages] = useState(25);
 
   // Bumped to trigger a re-fetch of the test case list from outside the effect.
@@ -568,6 +569,7 @@ const TestCases = () => {
     setPriority('Medium');
     setTestType('manual');
     setTestPurpose('functional');
+    setCheckDeadControls(false);
     setMaxPages(25);
     setFormError('');
   };
@@ -597,6 +599,7 @@ const TestCases = () => {
     setPriority(tc.priority || 'Medium');
     setTestType(tc.test_type || 'manual');
     setTestPurpose(tc.test_purpose || 'functional');
+    setCheckDeadControls(Boolean(tc.check_dead_controls));
     setMaxPages(tc.max_pages || 25);
     setFormError('');
     setShowModal(true);
@@ -623,6 +626,8 @@ const TestCases = () => {
       priority,
       test_type: testType,
       test_purpose: testPurpose,
+      // Off unless asked for: the check clicks real controls on the site.
+      check_dead_controls: checkDeadControls,
       // Playwright drives every automated run, so record that rather than let
       // the user claim a framework the platform does not actually use.
       automation_framework: testType === 'automated' ? 'playwright' : 'none',
@@ -1289,6 +1294,31 @@ const TestCases = () => {
                       </div>
                   </div>
                 </div>
+              </div>
+
+              {/* Off by default on purpose. This clicks real controls on a
+                  live site, which can submit a form or end a session. */}
+              <div className="rounded-xl border border-white/10 p-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checkDeadControls}
+                    onChange={(e) => setCheckDeadControls(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5"
+                  />
+                  <span>
+                    <span className="block text-slate-200 text-sm font-medium">
+                      Click controls to find dead buttons
+                    </span>
+                    <span className="block text-xs text-slate-500 mt-1">
+                      Finds buttons wired to nothing, which nothing else here can
+                      see. The run skips anything inside a form and anything
+                      labelled Delete, Pay, Submit or Log out, but it does click
+                      real controls. Only switch this on for a site where a stray
+                      click is safe.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div>
