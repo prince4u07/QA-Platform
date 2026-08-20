@@ -54,8 +54,14 @@ _PATTERNS = [
         r'^(?:expect|verify|check|assert)\s+(?:to\s+)?(?:see\s+)?(?:the\s+)?text\s+(?P<value>.+)$', re.I)),
     ('expect_text', re.compile(
         r'^(?:i\s+)?should\s+see\s+(?P<value>.+)$', re.I)),
+    # A bare "check X" or "verify X" is far more often an instruction meant
+    # for a person than a literal string to look for on the page. Guessing
+    # turned prose like "check all validations on empty field" into an
+    # assertion that could never pass, and a failed step is reported as a
+    # critical defect in the site, which had done nothing wrong. Quoting the
+    # value states the intent plainly, so that form is still accepted.
     ('expect_text', re.compile(
-        r'^(?:expect|verify|check|assert|see)\s+(?P<value>.+)$', re.I)),
+        r'^(?:expect|verify|check|assert|see)\s+(?P<value>"[^"]+"|\'[^\']+\')$', re.I)),
     ('goto', re.compile(
         r'^(?:open|go\s+to|visit|navigate\s+to|browse\s+to)\s+(?P<target>.+)$', re.I)),
     ('type', re.compile(
