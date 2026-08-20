@@ -50,3 +50,7 @@ backend/static/uploads/
 .DS_Store
 Thumbs.db
 .claude/settings.local.json
+
+# Word and Excel write a ~$ lock file next to any document that is open.
+# It is a few bytes of session state and must never reach the repo.
+~$*
