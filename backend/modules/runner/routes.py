@@ -275,7 +275,9 @@ def check_broken_links(page, base_url):
 
     PER_REQUEST_TIMEOUT = 3
     RETRY_TIMEOUT = 8
-    LINK_CAP = 30
+    # High enough that a real page is covered rather than sampled. Checks
+    # run in parallel, so the cost is wall-clock on link-heavy pages only.
+    LINK_CAP = 100
     POOL_SIZE = 8
 
     findings = []
@@ -692,7 +694,7 @@ def check_accessibility_heuristic(page):
     return findings
 
 
-TAP_TARGET_CAP = 50
+TAP_TARGET_CAP = 150
 
 
 def _is_inline_text_link(element):
@@ -703,11 +705,15 @@ def _is_inline_text_link(element):
     inline-block or block and is still measured.
     """
     try:
-        if (element.evaluate("el => el.nodeName") or '').lower() != 'a':
-            return False
-        return (element.evaluate("el => getComputedStyle(el).display") or '') == 'inline'
+        # One round trip, not two: this runs per control and the cap is high.
+        info = element.evaluate(
+            "el => ({tag: el.nodeName.toLowerCase(),"
+            " display: getComputedStyle(el).display})")
     except Exception:
         return False
+    if not isinstance(info, dict):
+        return False
+    return info.get('tag') == 'a' and info.get('display') == 'inline'
 
 
 def check_mobile(page):
@@ -770,6 +776,158 @@ def check_mobile(page):
             })
     except Exception as e:
         logger.warning("mobile check error: %s", e)
+    return findings, coverage
+
+
+
+# Words that mean a control does something you cannot take back. The dead
+# control check never clicks these. A crawler that deletes a record, places an
+# order or logs itself out is far worse than a dead button it failed to spot.
+DESTRUCTIVE_LABELS = (
+    'delete', 'remove', 'destroy', 'erase', 'clear', 'reset', 'discard',
+    'pay', 'buy', 'purchase', 'order', 'checkout', 'subscribe', 'donate',
+    'submit', 'send', 'confirm', 'apply', 'save', 'publish', 'archive',
+    'log out', 'logout', 'sign out', 'signout', 'deactivate', 'unsubscribe',
+    'cancel',
+)
+
+# Only things that are clickable but are not navigation. A real link already
+# has its destination checked by check_broken_links.
+DEAD_CONTROL_SELECTOR = 'button, [role="button"], a[href="#"], a[href=""], a:not([href])'
+
+DEAD_CONTROL_CAP = 15
+DEAD_CONTROL_SETTLE_MS = 400
+
+
+def _control_label(element):
+    """What a person would call this control."""
+    text = ''
+    try:
+        text = (element.inner_text() or '').strip()
+    except Exception:
+        text = ''
+    if not text:
+        try:
+            text = (element.get_attribute('aria-label') or '').strip()
+        except Exception:
+            text = ''
+    return text[:60]
+
+
+def _is_destructive(label):
+    lowered = (label or '').lower()
+    return any(word in lowered for word in DESTRUCTIVE_LABELS)
+
+
+def _control_state(page):
+    """
+    A cheap fingerprint of everything a working control could change.
+
+    Focus is deliberately left out: clicking always moves focus, so including
+    it would make every control look alive.
+    """
+    return page.evaluate("""() => ({
+        url: location.href,
+        html: document.documentElement.innerHTML.length,
+        nodes: document.getElementsByTagName('*').length,
+        requests: (performance.getEntriesByType('resource') || []).length,
+        storage: localStorage.length + sessionStorage.length,
+    })""")
+
+
+def check_dead_controls(page, page_url, cap=DEAD_CONTROL_CAP):
+    """
+    Find controls that do nothing whatsoever when clicked.
+
+    This is the one defect nothing else here can see: a button wired to
+    nothing raises no console error, breaks no link and violates no
+    accessibility rule. The only way to know is to click it and watch.
+
+    Clicking a live site is destructive, so this is opt-in per test case and
+    refuses to touch anything inside a form, anything disabled, any submit or
+    reset control, and anything whose label suggests it cannot be undone.
+
+    Returns (findings, coverage).
+    """
+    findings = []
+    coverage = {'controls_found': 0, 'controls_clicked': 0,
+                'skipped': 0, 'truncated': False}
+    try:
+        controls = page.query_selector_all(DEAD_CONTROL_SELECTOR)
+    except Exception as e:
+        logger.warning("dead controls: could not enumerate: %s", e)
+        return findings, coverage
+
+    coverage['controls_found'] = len(controls)
+
+    for element in controls:
+        if coverage['controls_clicked'] >= cap:
+            coverage['truncated'] = True
+            break
+
+        label = _control_label(element)
+        try:
+            enabled = element.is_enabled()
+        except Exception:
+            enabled = False
+        # A disabled control doing nothing is correct behaviour, not a defect.
+        if not enabled or _is_destructive(label):
+            coverage['skipped'] += 1
+            continue
+        try:
+            if (element.get_attribute('type') or '') in ('submit', 'reset'):
+                coverage['skipped'] += 1
+                continue
+            if element.evaluate("el => !!el.closest('form')"):
+                coverage['skipped'] += 1
+                continue
+        except Exception:
+            coverage['skipped'] += 1
+            continue
+
+        try:
+            before = _control_state(page)
+        except Exception as e:
+            logger.warning("dead controls: could not read page state: %s", e)
+            break
+
+        try:
+            element.click(timeout=2000)
+        except Exception:
+            # The click never landed, so nothing was learned about this
+            # control and nothing is claimed about it.
+            continue
+
+        coverage['controls_clicked'] += 1
+        try:
+            page.wait_for_timeout(DEAD_CONTROL_SETTLE_MS)
+            after = _control_state(page)
+        except Exception:
+            continue
+
+        if after != before:
+            if after.get('url') != before.get('url'):
+                # It navigated, which means it works. Go back so the rest of
+                # the crawl still happens on the page we were auditing.
+                try:
+                    page.goto(page_url, wait_until='domcontentloaded')
+                except Exception as e:
+                    logger.warning("dead controls: could not return to %s: %s",
+                                   page_url, e)
+            continue
+
+        shown = label or '(unlabelled)'
+        findings.append({
+            'issue': f'Control does nothing when clicked: {shown}',
+            'issue_type': 'dead_control',
+            'severity': 'serious',
+            'control': label,
+            'element_selector': _safe_get_selector(element),
+            'element_text': label,
+            'bounding_box': _safe_get_bounding_box(element),
+            'display': f'"{shown}" does nothing when clicked',
+        })
+
     return findings, coverage
 
 
@@ -1007,7 +1165,8 @@ def score_breakdown(findings_by_category):
     return breakdown
 
 
-def measured_categories(step_summary=None, mobile_checked=True):
+def measured_categories(step_summary=None, mobile_checked=True,
+                        accessibility_measured=True, controls_checked=False):
     """
     The categories a run actually measured.
 
@@ -1024,9 +1183,15 @@ def measured_categories(step_summary=None, mobile_checked=True):
     measured = set(CATEGORY_WEIGHT)
     if not mobile_checked:
         measured.discard('mobile_issues')
+    # When axe-core could not run, the fallback finds far less, so the run
+    # produced fewer findings and the score went UP because a tool broke.
+    if not accessibility_measured:
+        measured.discard('accessibility_issues')
     summary = step_summary or {}
     executed = summary.get('passed', 0) + summary.get('failed', 0)
-    if not executed:
+    # Clicking controls is a functional check too, so a run that only did
+    # that still measured the category and deserves credit for a clean result.
+    if not executed and not controls_checked:
         measured.discard('functional_issues')
     return measured
 
@@ -2002,6 +2167,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             return False
     base_url = tc['base_url']
     crawl_pages = bool(tc.get('crawl_pages'))
+    # Off unless this test case opted in: the check clicks real controls.
+    click_controls = bool(tc.get('check_dead_controls'))
     max_pages = int(tc.get('max_pages') or 10)
     if max_pages < 1:
         max_pages = 1
@@ -2269,6 +2436,15 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                     if page_idx == 0:
                         page_findings['functional_issues'] = step_findings
                         page_coverage['steps'] = step_summary
+
+                    # A control wired to nothing is a functional defect, so it
+                    # belongs with the workflow failures rather than in a
+                    # category of its own.
+                    if click_controls:
+                        dead, dead_coverage = check_dead_controls(page, page_url)
+                        page_findings['functional_issues'] = (
+                            page_findings.get('functional_issues') or []) + dead
+                        page_coverage['dead_controls'] = dead_coverage
                     page_findings = tag_findings_with_page(page_findings, page_url)
                     all_pages_coverage.append(page_coverage)
 
@@ -2318,7 +2494,11 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         page_findings,
                         measured=measured_categories(
                             step_summary if page_idx == 0 else None,
-                            mobile_checked=not session_used))
+                            mobile_checked=not session_used,
+                            accessibility_measured=(
+                                page_coverage.get('accessibility_engine')
+                                == 'axe-core'),
+                            controls_checked=click_controls))
 
                     all_pages_findings.append(page_findings)
                     per_page_records.append({
@@ -2368,10 +2548,17 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 for category, items in merged_findings.items()
             }
 
+            # axe running on even one page means the accessibility findings
+            # are real; it is only when it never ran that the number is empty
+            # for the wrong reason.
+            axe_ran = any((c or {}).get('accessibility_engine') == 'axe-core'
+                          for c in all_pages_coverage)
             health_score = calculate_health_score(
                 merged_findings,
                 measured=measured_categories(step_summary,
-                                             mobile_checked=not session_used))
+                                             mobile_checked=not session_used,
+                                             accessibility_measured=axe_ran,
+                                             controls_checked=click_controls))
             breakdown = score_breakdown(merged_findings)
             coverage_summary = summarise_coverage(all_pages_coverage)
             top_severity = worst_severity(merged_findings)

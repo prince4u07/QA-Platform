@@ -335,17 +335,10 @@ def run_steps(page, steps_text, base_url=None, on_step=None):
                 'screenshot': record['screenshot'],
                 'display': f'Step {index + 1} failed: {outcome["message"]}',
             })
-        elif outcome['status'] == 'unreadable':
-            findings.append({
-                'issue': f'Step {index + 1} could not be understood: {step["raw"]}',
-                'severity': 'moderate',
-                'step_index': index,
-                'step': step['raw'],
-                'reason': outcome['message'],
-                'detail': outcome.get('detail', ''),
-                'element_selector': 'document',
-                'display': f'Step {index + 1} is not a step the runner understands',
-            })
+        # A step the runner cannot read never reached the site, so it is not
+        # a defect in the site. It stays in `results` for whoever wrote it and
+        # is counted in the coverage notes, but it is not scored against the
+        # thing under test, which never had a chance to fail it.
 
     return results, findings
 
