@@ -790,3 +790,138 @@ def test_a_fully_measured_run_carries_no_weight_note():
     ])
 
     assert cov['complete'] is True
+
+
+# ============================================================
+# 16. A check that never ran must not score as a perfect one
+# ============================================================
+
+from modules.runner.routes import (  # noqa: E402
+    CATEGORY_WEIGHT,
+    calculate_health_score,
+    measured_categories,
+)
+from modules.runner.steps import summarise_steps  # noqa: E402
+
+ALL_CATEGORIES = set(CATEGORY_WEIGHT)
+
+
+def damaged_site():
+    """
+    A site with real problems. Excluding a perfect category pulls the average
+    toward the measured reality, so the effect is only visible when there is
+    a reality to pull toward. On a near-clean site it is under a rounding step.
+    """
+    return {
+        'broken_links': [{'severity': 'serious'} for _ in range(5)],
+        'security_issues': [{'severity': 'critical'} for _ in range(2)],
+        'console_errors': [{'severity': 'serious'} for _ in range(3)],
+    }
+
+
+def test_a_skipped_mobile_check_does_not_count_as_full_marks():
+    """
+    Authenticated crawls run on a desktop viewport and skip the mobile
+    checks entirely. With no findings that category scored 100, so skipping
+    a check quietly raised the score. Not measuring is not a pass.
+    """
+    findings = damaged_site()
+
+    counted_as_perfect = calculate_health_score(findings)
+    honest = calculate_health_score(findings, measured=ALL_CATEGORIES - {'mobile_issues'})
+
+    assert honest < counted_as_perfect
+
+
+def test_a_run_with_no_executed_steps_does_not_bank_the_functional_weight():
+    """
+    functional_issues carries 25 of the 100 weight, more than any other
+    category. When no step ever executed there is nothing to report, so
+    that quarter of the score was awarded for work that never happened.
+    """
+    findings = damaged_site()
+
+    banked = calculate_health_score(findings)
+    honest = calculate_health_score(findings, measured=ALL_CATEGORIES - {'functional_issues'})
+
+    assert honest < banked
+
+
+def test_a_measured_category_that_is_genuinely_clean_still_scores_full_marks():
+    """The fix must not punish a check that ran and honestly found nothing."""
+    assert calculate_health_score({}, measured=ALL_CATEGORIES) == 100
+
+
+def test_scoring_is_unchanged_when_no_category_is_declared_unmeasured():
+    """Existing behaviour has to survive: measured is an addition, not a rewrite."""
+    findings = {'broken_links': [{'severity': 'serious'}],
+                'seo_issues': [{'severity': 'moderate'}]}
+
+    assert calculate_health_score(findings) == calculate_health_score(
+        findings, measured=ALL_CATEGORIES)
+
+
+def test_functional_is_unmeasured_when_no_step_ran_at_all():
+    assert 'functional_issues' not in measured_categories(
+        summarise_steps([]), mobile_checked=True)
+
+
+def test_functional_is_measured_once_a_step_actually_executed():
+    ran = summarise_steps([{'index': 0, 'status': 'passed'}])
+
+    assert 'functional_issues' in measured_categories(ran, mobile_checked=True)
+
+
+def test_a_failed_step_still_counts_as_a_functional_measurement():
+    """A step that ran and failed is exactly the signal this category exists for."""
+    failed = summarise_steps([{'index': 0, 'status': 'failed'}])
+
+    assert 'functional_issues' in measured_categories(failed, mobile_checked=True)
+
+
+def test_steps_the_runner_could_not_read_are_not_a_measurement():
+    """
+    Prose steps never execute, so nothing about the site was verified. The
+    step is still reported to the author, but the site is not scored on a
+    check that never actually ran.
+    """
+    unreadable = summarise_steps([{'index': 0, 'status': 'unreadable'},
+                                  {'index': 1, 'status': 'unreadable'}])
+
+    assert 'functional_issues' not in measured_categories(unreadable, mobile_checked=True)
+
+
+def test_mobile_is_unmeasured_when_the_check_was_skipped():
+    ran = summarise_steps([{'index': 0, 'status': 'passed'}])
+
+    assert 'mobile_issues' not in measured_categories(ran, mobile_checked=False)
+
+
+def test_every_other_category_is_always_measured():
+    """These nine run on every page, so only mobile and functional can be absent."""
+    measured = measured_categories(summarise_steps([]), mobile_checked=False)
+
+    assert measured == ALL_CATEGORIES - {'mobile_issues', 'functional_issues'}
+
+
+def test_coverage_says_when_steps_could_not_be_run():
+    """
+    A run where most steps were unreadable verified almost nothing, and the
+    report has to say so rather than presenting the score as a full result.
+    """
+    cov = summarise_coverage([
+        {'steps': {'total': 6, 'passed': 2, 'failed': 0,
+                   'unreadable': 4, 'skipped': 0}},
+    ])
+
+    assert cov['complete'] is False
+    assert '4' in ' '.join(cov['notes'])
+
+
+def test_coverage_is_quiet_when_every_step_ran():
+    cov = summarise_coverage([
+        {'steps': {'total': 3, 'passed': 3, 'failed': 0,
+                   'unreadable': 0, 'skipped': 0}},
+    ])
+
+    assert cov['complete'] is True
