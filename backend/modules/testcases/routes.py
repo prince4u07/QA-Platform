@@ -11,6 +11,11 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 testcases_bp = Blueprint('testcases', __name__)
 mysql = None
 
+TEST_PURPOSES = {
+    'manual': {'functional', 'exploratory', 'usability', 'ad_hoc'},
+    'automated': {'functional', 'regression', 'performance', 'accessibility'},
+}
+
 
 def init_testcases(app_mysql):
     global mysql
@@ -39,6 +44,20 @@ def user_owns_testcase(user_id, testcase_id):
     result = cursor.fetchone()
     cursor.close()
     return result is not None
+
+
+def test_settings(data):
+    """Return settings the platform can actually execute."""
+    test_type = data.get('test_type') or 'manual'
+    if test_type not in TEST_PURPOSES:
+        raise ValueError('Test type must be manual or automated')
+
+    purpose = data.get('test_purpose') or 'functional'
+    if purpose not in TEST_PURPOSES[test_type]:
+        raise ValueError(f'Invalid purpose for a {test_type} test')
+
+    framework = 'playwright' if test_type == 'automated' else 'none'
+    return test_type, purpose, framework
 
 
 # ============================================================
@@ -108,9 +127,10 @@ def create_testcase():
 
     description = (data.get('description') or '').strip()
     priority = data.get('priority') or 'Medium'
-    status = data.get('status') or 'Pending'
-    test_type = data.get('test_type') or 'manual'
-    automation_framework = data.get('automation_framework') or 'none'
+    try:
+        test_type, test_purpose, automation_framework = test_settings(data)
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
 
     # NEW: crawl fields
     crawl_pages = bool(data.get('crawl_pages', False))
@@ -120,6 +140,9 @@ def create_testcase():
         max_pages = 1
     if max_pages > 100:
         max_pages = 100
+    # Clicking controls on a live site can submit a form or log the crawler
+    # out, so it only ever happens when the test case asks for it.
+    check_dead_controls = bool(data.get('check_dead_controls', False))
 
     try:
         cursor = mysql.connection.cursor()
@@ -127,11 +150,12 @@ def create_testcase():
             """INSERT INTO test_cases (
                 project_id, title, description, steps, expected_result,
                 priority, status, test_type, automation_framework,
-                crawl_pages, max_pages, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                test_purpose, crawl_pages, max_pages,
+                check_dead_controls, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
             (project_id, title, description, steps, expected_result,
-             priority, status, test_type, automation_framework,
-             crawl_pages, max_pages)
+             priority, 'Pending', test_type, automation_framework,
+             test_purpose, crawl_pages, max_pages, check_dead_controls)
         )
         mysql.connection.commit()
         tc_id = cursor.lastrowid
@@ -165,65 +189,43 @@ def update_testcase(tc_id):
     if not expected_result:
         return jsonify({'error': 'Expected result is required'}), 400
 
+    try:
+        test_type, test_purpose, automation_framework = test_settings(data)
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
+
     crawl_pages = bool(data.get('crawl_pages', False))
     max_pages = int(data.get('max_pages') or 10)
     if max_pages < 1:
         max_pages = 1
     if max_pages > 100:
         max_pages = 100
+    check_dead_controls = bool(data.get('check_dead_controls', False))
 
     try:
         cursor = mysql.connection.cursor()
         cursor.execute(
             """UPDATE test_cases SET
                 title = %s, description = %s, steps = %s, expected_result = %s,
-                priority = %s, status = %s, test_type = %s, automation_framework = %s,
-                crawl_pages = %s, max_pages = %s
+                priority = %s, test_type = %s, automation_framework = %s,
+                test_purpose = %s, crawl_pages = %s, max_pages = %s,
+                check_dead_controls = %s
                 WHERE id = %s""",
             (
                 title,
                 (data.get('description') or '').strip(),
                 steps, expected_result,
                 data.get('priority') or 'Medium',
-                data.get('status') or 'Pending',
-                data.get('test_type') or 'manual',
-                data.get('automation_framework') or 'none',
-                crawl_pages, max_pages,
+                test_type,
+                automation_framework,
+                test_purpose,
+                crawl_pages, max_pages, check_dead_controls,
                 tc_id
             )
         )
         mysql.connection.commit()
         cursor.close()
         return jsonify({'message': 'Test case updated'}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-# ============================================================
-# QUICK STATUS UPDATE
-# ============================================================
-
-@testcases_bp.route('/<int:tc_id>/status', methods=['PATCH'])
-@jwt_required()
-def update_status(tc_id):
-    user_id = int(get_jwt_identity())
-    if not user_owns_testcase(user_id, tc_id):
-        return jsonify({'error': 'Test case not found'}), 404
-
-    data = request.json or {}
-    new_status = data.get('status')
-    if new_status not in ('Pass', 'Fail', 'Pending'):
-        return jsonify({'error': 'Invalid status'}), 400
-
-    try:
-        cursor = mysql.connection.cursor()
-        cursor.execute(
-            "UPDATE test_cases SET status = %s WHERE id = %s",
-            (new_status, tc_id)
-        )
-        mysql.connection.commit()
-        cursor.close()
-        return jsonify({'message': 'Status updated', 'status': new_status}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

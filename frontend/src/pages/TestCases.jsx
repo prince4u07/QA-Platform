@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Plus, FlaskConical, Bot, Play, History, Pencil, Trash2,
-  CheckCircle2, XCircle, RotateCcw, Wand2, X, Clock, Gauge,
+  CheckCircle2, XCircle, Wand2, X, Clock, Gauge,
   Package, Repeat, Link2, Bug, ImageOff, Search, ShieldAlert,
   Accessibility, Smartphone, Camera, Loader2, Inbox, PartyPopper,
   ChevronDown, ChevronRight, Network, AlertTriangle,
@@ -15,7 +15,6 @@ import {
   getTestCases,
   createTestCase,
   updateTestCase,
-  updateTestCaseStatus,
   deleteTestCase,
 } from '../api/testcases';
 import { runTestCaseAsync, getRunJob, cancelRunJob, getTestRuns, getCrawledPages,
@@ -24,6 +23,25 @@ import { runTestCaseAsync, getRunJob, cancelRunJob, getTestRuns, getCrawledPages
 import { createBugsFromTestRun } from '../api/bugs';
 
 // ---- pure helpers (module scope) ----
+
+// What each mode is allowed to be used for. This mirrors TEST_PURPOSES in
+// backend/modules/testcases/routes.py, which rejects any other pairing, so
+// the two lists must be changed together.
+const TEST_PURPOSES = {
+  manual: [
+    ['functional', 'Functional'],
+    ['exploratory', 'Exploratory'],
+    ['usability', 'Usability'],
+    ['ad_hoc', 'Ad-hoc'],
+  ],
+  automated: [
+    ['functional', 'Functional'],
+    ['regression', 'Regression'],
+    ['performance', 'Performance'],
+    ['accessibility', 'Accessibility'],
+  ],
+};
+
 const scoreColor = (score) => {
   if (score >= 90) return { text: 'text-brand-teal', border: 'border-brand-teal/50', bar: 'bg-brand-teal', label: 'Excellent' };
   if (score >= 70) return { text: 'text-brand-sky', border: 'border-brand-sky/50', bar: 'bg-brand-sky', label: 'Good' };
@@ -441,8 +459,9 @@ const TestCases = () => {
   const [steps, setSteps] = useState('');
   const [expectedResult, setExpectedResult] = useState('');
   const [priority, setPriority] = useState('Medium');
-  const [status, setStatus] = useState('Pending');
   const [testType, setTestType] = useState('manual');
+  const [testPurpose, setTestPurpose] = useState('functional');
+  const [checkDeadControls, setCheckDeadControls] = useState(false);
   const [maxPages, setMaxPages] = useState(25);
 
   // Bumped to trigger a re-fetch of the test case list from outside the effect.
@@ -548,10 +567,20 @@ const TestCases = () => {
     setSteps('');
     setExpectedResult('');
     setPriority('Medium');
-    setStatus('Pending');
     setTestType('manual');
+    setTestPurpose('functional');
+    setCheckDeadControls(false);
     setMaxPages(25);
     setFormError('');
+  };
+
+  // Purposes are mode-specific, so switching mode has to drop a purpose the
+  // new mode cannot run. The API rejects those pairings outright.
+  const changeTestType = (next) => {
+    setTestType(next);
+    if (!TEST_PURPOSES[next].some(([value]) => value === testPurpose)) {
+      setTestPurpose('functional');
+    }
   };
 
   const openCreateModal = () => {
@@ -568,8 +597,9 @@ const TestCases = () => {
     setSteps(tc.steps || '');
     setExpectedResult(tc.expected_result || '');
     setPriority(tc.priority || 'Medium');
-    setStatus(tc.status || 'Pending');
     setTestType(tc.test_type || 'manual');
+    setTestPurpose(tc.test_purpose || 'functional');
+    setCheckDeadControls(Boolean(tc.check_dead_controls));
     setMaxPages(tc.max_pages || 25);
     setFormError('');
     setShowModal(true);
@@ -594,8 +624,15 @@ const TestCases = () => {
       steps: steps.trim(),
       expected_result: expectedResult.trim(),
       priority,
-      status,
       test_type: testType,
+      test_purpose: testPurpose,
+      // Off unless asked for: the check clicks real controls on the site.
+      check_dead_controls: checkDeadControls,
+      // Playwright drives every automated run, so record that rather than let
+      // the user claim a framework the platform does not actually use.
+      automation_framework: testType === 'automated' ? 'playwright' : 'none',
+      // Deliberately no `status`: Pass/Fail is a result, and only a recorded
+      // run may set it. A new test case starts Pending.
       // Automated = crawl the whole site; manual = just the single page.
       crawl_pages: testType === 'automated',
       // Manual runs crawl too, so the page limit applies to both. It used to
@@ -620,15 +657,6 @@ const TestCases = () => {
   };
 
   // ===== Row actions =====
-  const handleStatusChange = async (id, newStatus) => {
-    try {
-      await updateTestCaseStatus(id, newStatus);
-      setTestCases((prev) => prev.map((tc) => (tc.id === id ? { ...tc, status: newStatus } : tc)));
-    } catch (_) {
-      console.error('Failed to update status', _);
-    }
-  };
-
   const handleDelete = async (id, tcTitle) => {
     if (!window.confirm(`Delete test case "${tcTitle}"? This cannot be undone.`)) return;
     try {
@@ -900,8 +928,11 @@ const TestCases = () => {
   const inputBase =
     'w-full rounded-xl bg-white/5 border px-4 py-2.5 text-slate-100 placeholder:text-slate-500 ' +
     'focus:outline-none focus:ring-2 transition';
+  // focus-within is what makes the choice visible to a keyboard user: the
+  // real radio is sr-only, so without this its focus ring would be invisible.
   const toggleClass = (active) =>
     'flex-1 cursor-pointer px-4 py-2.5 border rounded-xl text-center text-sm transition ' +
+    'focus-within:ring-2 focus-within:ring-brand-sky/60 ' +
     (active
       ? 'border-brand-indigo/60 bg-brand-indigo/15 text-white font-medium'
       : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/5');
@@ -936,6 +967,27 @@ const TestCases = () => {
           </button>
         </motion.div>
 
+        {/* The two modes answer different questions. Saying so up front is
+            what stops people reaching for the wrong one. */}
+        <div className="glass rounded-2xl p-4 mb-6 grid gap-3 sm:grid-cols-2 text-sm">
+          <div className="flex items-start gap-2.5">
+            <FlaskConical className="w-4 h-4 mt-0.5 text-brand-indigo flex-shrink-0" />
+            <p className="text-slate-400">
+              <span className="text-slate-200 font-medium">Manual</span> is for
+              exploratory and usability checks, where a person has to judge
+              whether the result is good enough.
+            </p>
+          </div>
+          <div className="flex items-start gap-2.5">
+            <Bot className="w-4 h-4 mt-0.5 text-brand-sky flex-shrink-0" />
+            <p className="text-slate-400">
+              <span className="text-slate-200 font-medium">Automated</span> is for
+              repeatable regression and performance checks, driven by Playwright
+              in a real browser.
+            </p>
+          </div>
+        </div>
+
         {projects.length === 0 && (
           <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-3 rounded-xl mb-6 text-sm">
             You need at least one project before creating test cases.{' '}
@@ -946,8 +998,9 @@ const TestCases = () => {
         {projects.length > 0 && (
           <div className="glass rounded-2xl p-4 mb-6 flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-slate-300">Project:</label>
+              <label htmlFor="filter-project" className="text-sm font-medium text-slate-300">Project:</label>
               <select
+                id="filter-project"
                 value={selectedProject}
                 onChange={(e) => setSelectedProject(e.target.value)}
                 className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-sky/60"
@@ -985,7 +1038,7 @@ const TestCases = () => {
               onClick={openCreateModal}
               className="inline-flex items-center gap-2 bg-brand-gradient text-white px-6 py-3 rounded-xl font-medium shadow-glow"
             >
-              <Plus className="w-4 h-4" /> Create Test Case
+              <Plus className="w-4 h-4" /> Create your first test case
             </button>
           </div>
         ) : (
@@ -1093,25 +1146,13 @@ const TestCases = () => {
                     </button>
                   )}
 
-                  <button onClick={() => handleStatusChange(tc.id, 'Pass')}
-                    className="inline-flex items-center gap-1.5 text-sm bg-brand-teal/10 hover:bg-brand-teal/20 text-brand-teal px-3 py-1.5 rounded-lg transition">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Pass
+                  {/* Both modes record a run, so both have a history worth
+                      reading. Pass/Fail is never set by hand here: it is the
+                      outcome of a run, not a label someone applies. */}
+                  <button onClick={() => openHistory(tc)}
+                    className="inline-flex items-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1.5 rounded-lg transition">
+                    <History className="w-3.5 h-3.5" /> History
                   </button>
-                  <button onClick={() => handleStatusChange(tc.id, 'Fail')}
-                    className="inline-flex items-center gap-1.5 text-sm bg-red-500/10 hover:bg-red-500/20 text-red-300 px-3 py-1.5 rounded-lg transition">
-                    <XCircle className="w-3.5 h-3.5" /> Fail
-                  </button>
-                  <button onClick={() => handleStatusChange(tc.id, 'Pending')}
-                    className="inline-flex items-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-400 px-3 py-1.5 rounded-lg transition">
-                    <RotateCcw className="w-3.5 h-3.5" /> Reset
-                  </button>
-
-                  {tc.test_type === 'automated' && (
-                    <button onClick={() => openHistory(tc)}
-                      className="inline-flex items-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1.5 rounded-lg transition">
-                      <History className="w-3.5 h-3.5" /> History
-                    </button>
-                  )}
 
                   <div className="ml-auto flex gap-2">
                     <button onClick={() => openEditModal(tc)}
@@ -1156,8 +1197,9 @@ const TestCases = () => {
               )}
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Project *</label>
+                <label htmlFor="tc-project" className="block text-slate-300 text-sm font-medium mb-1.5">Project *</label>
                 <select
+                  id="tc-project"
                   value={projectId}
                   onChange={(e) => setProjectId(e.target.value)}
                   disabled={editingId !== null}
@@ -1172,18 +1214,40 @@ const TestCases = () => {
 
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-1.5">Test Type *</label>
+                {/* sr-only, not hidden: `hidden` is display:none, which drops
+                    the radios out of the accessibility tree entirely and makes
+                    the choice unreachable by keyboard or screen reader. */}
                 <div className="flex gap-3">
                   <label className={toggleClass(testType === 'manual')}>
-                    <input type="radio" value="manual" checked={testType === 'manual'}
-                      onChange={(e) => setTestType(e.target.value)} className="hidden" />
+                    <input type="radio" name="test-type" value="manual" checked={testType === 'manual'}
+                      onChange={(e) => changeTestType(e.target.value)} className="sr-only" />
                     <span className="inline-flex items-center gap-1.5"><FlaskConical className="w-4 h-4" /> Manual</span>
                   </label>
                   <label className={toggleClass(testType === 'automated')}>
-                    <input type="radio" value="automated" checked={testType === 'automated'}
-                      onChange={(e) => setTestType(e.target.value)} className="hidden" />
+                    <input type="radio" name="test-type" value="automated" checked={testType === 'automated'}
+                      onChange={(e) => changeTestType(e.target.value)} className="sr-only" />
                     <span className="inline-flex items-center gap-1.5"><Bot className="w-4 h-4" /> Automated</span>
                   </label>
                 </div>
+              </div>
+
+              <div>
+                <label htmlFor="tc-purpose" className="block text-slate-300 text-sm font-medium mb-1.5">Test Purpose *</label>
+                <select
+                  id="tc-purpose"
+                  value={testPurpose}
+                  onChange={(e) => setTestPurpose(e.target.value)}
+                  className={`${inputBase} border-white/10 focus:ring-brand-sky/60`}
+                >
+                  {TEST_PURPOSES[testType].map(([value, label]) => (
+                    <option key={value} value={value} className="bg-surface">{label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-500 mt-1.5">
+                  {testType === 'automated'
+                    ? 'What this run is for. Automated runs repeat the same checks the same way, which is what makes regression and performance comparisons meaningful.'
+                    : 'What this session is for. Manual runs cover the judgement calls a script cannot make.'}
+                </p>
               </div>
 
               {/* Both modes crawl now: automated does it headlessly, manual
@@ -1232,9 +1296,34 @@ const TestCases = () => {
                 </div>
               </div>
 
+              {/* Off by default on purpose. This clicks real controls on a
+                  live site, which can submit a form or end a session. */}
+              <div className="rounded-xl border border-white/10 p-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checkDeadControls}
+                    onChange={(e) => setCheckDeadControls(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5"
+                  />
+                  <span>
+                    <span className="block text-slate-200 text-sm font-medium">
+                      Click controls to find dead buttons
+                    </span>
+                    <span className="block text-xs text-slate-500 mt-1">
+                      Finds buttons wired to nothing, which nothing else here can
+                      see. The run skips anything inside a form and anything
+                      labelled Delete, Pay, Submit or Log out, but it does click
+                      real controls. Only switch this on for a site where a stray
+                      click is safe.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Title *</label>
-                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)}
+                <label htmlFor="tc-title" className="block text-slate-300 text-sm font-medium mb-1.5">Title *</label>
+                <input id="tc-title" type="text" value={title} onChange={(e) => setTitle(e.target.value)}
                   placeholder="User can search for products"
                   className={`${inputBase} ${title && !isTitleValid ? 'border-red-500/60 focus:ring-red-500/50' : 'border-white/10 focus:ring-brand-sky/60'}`} />
                 {title && !isTitleValid && (
@@ -1243,15 +1332,15 @@ const TestCases = () => {
               </div>
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Description</label>
-                <textarea value={description} onChange={(e) => setDescription(e.target.value)}
+                <label htmlFor="tc-description" className="block text-slate-300 text-sm font-medium mb-1.5">Description</label>
+                <textarea id="tc-description" value={description} onChange={(e) => setDescription(e.target.value)}
                   placeholder="What does this test verify?" rows="2"
                   className={`${inputBase} border-white/10 focus:ring-brand-sky/60`} />
               </div>
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Steps * (one per line)</label>
-                <textarea value={steps} onChange={(e) => setSteps(e.target.value)}
+                <label htmlFor="tc-steps" className="block text-slate-300 text-sm font-medium mb-1.5">Steps * (one per line)</label>
+                <textarea id="tc-steps" value={steps} onChange={(e) => setSteps(e.target.value)}
                   placeholder={'Open /login\nType alice@example.com into Email\nType hunter2 into Password\nClick Sign in\nExpect text Welcome back\nExpect url contains /dashboard'}
                   rows="6"
                   className={`${inputBase} font-mono text-sm ${steps && !isStepsValid ? 'border-red-500/60 focus:ring-red-500/50' : 'border-white/10 focus:ring-brand-sky/60'}`} />
@@ -1275,8 +1364,8 @@ const TestCases = () => {
               </div>
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Expected Result *</label>
-                <textarea value={expectedResult} onChange={(e) => setExpectedResult(e.target.value)}
+                <label htmlFor="tc-expected" className="block text-slate-300 text-sm font-medium mb-1.5">Expected Result *</label>
+                <textarea id="tc-expected" value={expectedResult} onChange={(e) => setExpectedResult(e.target.value)}
                   placeholder="What should happen if the test passes?" rows="2"
                   className={`${inputBase} ${expectedResult && !isExpectedValid ? 'border-red-500/60 focus:ring-red-500/50' : 'border-white/10 focus:ring-brand-sky/60'}`} />
               </div>
@@ -1286,26 +1375,17 @@ const TestCases = () => {
                 <div className="flex gap-3">
                   {['Low', 'Medium', 'High'].map((p) => (
                     <label key={p} className={toggleClass(priority === p)}>
-                      <input type="radio" value={p} checked={priority === p}
-                        onChange={(e) => setPriority(e.target.value)} className="hidden" />
+                      <input type="radio" name="priority" value={p} checked={priority === p}
+                        onChange={(e) => setPriority(e.target.value)} className="sr-only" />
                       {p}
                     </label>
                   ))}
                 </div>
               </div>
 
-              <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Status</label>
-                <div className="flex gap-3">
-                  {['Pending', 'Pass', 'Fail'].map((s) => (
-                    <label key={s} className={toggleClass(status === s)}>
-                      <input type="radio" value={s} checked={status === s}
-                        onChange={(e) => setStatus(e.target.value)} className="hidden" />
-                      {s}
-                    </label>
-                  ))}
-                </div>
-              </div>
+              {/* No Status field. Pass/Fail is the result of a run, so letting
+                  someone type it here would mean the dashboard could report a
+                  pass that nothing ever verified. */}
 
               <div className="flex gap-3 pt-4 border-t border-white/10">
                 <button type="button" onClick={closeModal}
