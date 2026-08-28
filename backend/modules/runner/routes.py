@@ -20,6 +20,8 @@ import json
 import time
 import uuid
 import logging
+import math
+import threading
 import requests
 
 from modules.runner.jobs import job_manager
@@ -238,6 +240,29 @@ def _session_expiry_info(session_path):
 # CHECK FUNCTIONS
 # ============================================================
 
+def resolve_link_url(href, base_url):
+    """
+    Absolute URL for one href, or None when it does not address a page.
+
+    Relative hrefs (about.html, ../contact) used to be dropped before they
+    were even counted, so a broken relative link could never be found while
+    the coverage note still claimed every link had been checked. The fragment
+    is stripped because #section addresses the same document.
+    """
+    if not href:
+        return None
+    href = href.strip()
+    if not href or href.startswith(('#', 'javascript:', 'mailto:', 'tel:', 'data:')):
+        return None
+    try:
+        resolved = urljoin(base_url, href)
+    except Exception:
+        return None
+    if not resolved.startswith(('http://', 'https://')):
+        return None
+    return resolved.split('#', 1)[0]
+
+
 def check_broken_links(page, base_url):
     """
     Fan-out HEAD requests in parallel. Sequential 50 × 5 s on a heavy site like
@@ -249,7 +274,10 @@ def check_broken_links(page, base_url):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     PER_REQUEST_TIMEOUT = 3
-    LINK_CAP = 30
+    RETRY_TIMEOUT = 8
+    # High enough that a real page is covered rather than sampled. Checks
+    # run in parallel, so the cost is wall-clock on link-heavy pages only.
+    LINK_CAP = 100
     POOL_SIZE = 8
 
     findings = []
@@ -261,17 +289,8 @@ def check_broken_links(page, base_url):
         seen_urls = set()
         for link in links:
             try:
-                href = link.get_attribute('href')
-                if not href or href.startswith(('#', 'javascript:', 'mailto:', 'tel:')):
-                    continue
-                if href.startswith('/'):
-                    parsed = urlparse(base_url)
-                    full_url = f"{parsed.scheme}://{parsed.netloc}{href}"
-                elif href.startswith('http'):
-                    full_url = href
-                else:
-                    continue
-                if full_url in seen_urls:
+                full_url = resolve_link_url(link.get_attribute('href'), base_url)
+                if not full_url or full_url in seen_urls:
                     continue
                 seen_urls.add(full_url)
                 candidates.append((full_url, link))
@@ -296,36 +315,60 @@ def check_broken_links(page, base_url):
     # 302/401/403 and got wrongly flagged "broken". (cookies()/evaluate() run on
     # this crawl thread where `page` lives; the pool threads below only touch the
     # requests Session, never a Playwright object.)
-    session = requests.Session()
+    cookie_specs = []
     try:
         for c in page.context.cookies():
-            try:
-                session.cookies.set(
-                    c.get('name'), c.get('value'),
-                    domain=(c.get('domain') or '').lstrip('.'),
-                    path=c.get('path') or '/',
-                )
-            except Exception:
-                continue
+            cookie_specs.append((
+                c.get('name'), c.get('value'),
+                (c.get('domain') or '').lstrip('.'), c.get('path') or '/',
+            ))
     except Exception:
         pass
     try:
-        ua = page.evaluate("navigator.userAgent")
-        if ua:
-            session.headers['User-Agent'] = ua
+        user_agent = page.evaluate("navigator.userAgent")
     except Exception:
-        pass
+        user_agent = None
+
+    # requests.Session is not documented as thread-safe and this pool runs 8
+    # workers, so each thread builds its own session from the same browser
+    # cookies rather than all of them sharing one object.
+    thread_state = threading.local()
+
+    def session_for_thread():
+        existing = getattr(thread_state, 'session', None)
+        if existing is not None:
+            return existing
+        s = requests.Session()
+        for name, value, domain, path in cookie_specs:
+            try:
+                s.cookies.set(name, value, domain=domain, path=path)
+            except Exception:
+                continue
+        if user_agent:
+            s.headers['User-Agent'] = user_agent
+        thread_state.session = s
+        return s
+
+    def _attempt(url, timeout):
+        session = session_for_thread()
+        r = session.head(url, timeout=timeout, allow_redirects=True)
+        # Many servers don't implement HEAD and answer 403/405/501 even when
+        # the page is fine, so confirm with a lightweight GET before judging.
+        if r.status_code in (403, 405, 501):
+            r = session.get(url, timeout=timeout, allow_redirects=True, stream=True)
+            r.close()
+        return r.status_code
 
     def _check(url):
+        # A 3 second timeout is not proof a link is dead, it is usually just a
+        # slow server. One slower retry before calling it unreachable removes
+        # that noise while still catching a genuinely dead host.
         try:
-            r = session.head(url, timeout=PER_REQUEST_TIMEOUT, allow_redirects=True)
-            # Many servers don't implement HEAD and answer 403/405/501 even when
-            # the page is fine — confirm with a lightweight GET before judging.
-            if r.status_code in (403, 405, 501):
-                r = session.get(url, timeout=PER_REQUEST_TIMEOUT,
-                                allow_redirects=True, stream=True)
-                r.close()
-            return r.status_code
+            return _attempt(url, PER_REQUEST_TIMEOUT)
+        except requests.RequestException:
+            pass
+        try:
+            return _attempt(url, RETRY_TIMEOUT)
         except requests.RequestException:
             return 0
 
@@ -391,6 +434,12 @@ def check_broken_links(page, base_url):
     return findings, coverage
 
 
+# Below this an image is a spacer, tracking pixel or tiny icon, where asking
+# for alt text is noise. At or above it the image carries meaning a screen
+# reader user would otherwise lose.
+ALT_MIN_SIZE_PX = 32
+
+
 def check_missing_alt(page):
     findings = []
     try:
@@ -399,10 +448,18 @@ def check_missing_alt(page):
             try:
                 alt = img.get_attribute('alt')
                 src = img.get_attribute('src') or '(no src)'
-                if alt is not None and alt.strip() != '':
+                # Any alt attribute means the author made a decision, and
+                # alt="" is the correct way to mark an image as decorative.
+                # Only a missing attribute is a defect.
+                if alt is not None:
+                    continue
+                if (img.get_attribute('role') or '') in ('presentation', 'none'):
+                    continue
+                if (img.get_attribute('aria-hidden') or '') == 'true':
                     continue
                 box = img.bounding_box()
-                if not box or box['width'] < 100 or box['height'] < 100:
+                if (not box or box['width'] < ALT_MIN_SIZE_PX
+                        or box['height'] < ALT_MIN_SIZE_PX):
                     continue
                 findings.append({
                     'src': src[:200],
@@ -430,6 +487,26 @@ def check_seo(page, page_url):
                 'element_selector': 'head > title',
                 'display': 'Page has no title',
             })
+
+        meta = page.query_selector('meta[name="description"]')
+        description = (meta.get_attribute('content') or '').strip() if meta else ''
+        if not description:
+            findings.append({
+                'issue': 'Page has no meta description',
+                'severity': 'moderate',
+                'element_selector': 'head > meta[name="description"]',
+                'display': 'Page has no meta description',
+            })
+
+        # Every page needs one top-level heading: it is how search engines and
+        # screen reader users work out what the page is actually about.
+        if not page.query_selector('h1'):
+            findings.append({
+                'issue': 'Page has no H1 heading',
+                'severity': 'moderate',
+                'element_selector': 'h1',
+                'display': 'Page has no H1 heading',
+            })
     except Exception as e:
         logger.warning("seo check error: %s", e)
     return findings
@@ -438,7 +515,8 @@ def check_seo(page, page_url):
 def check_security(page_url, response_headers):
     findings = []
     try:
-        if not page_url.startswith('https://'):
+        is_https = page_url.startswith('https://')
+        if not is_https:
             findings.append({
                 'issue': 'Site is using insecure HTTP instead of HTTPS',
                 'severity': 'critical',
@@ -446,15 +524,21 @@ def check_security(page_url, response_headers):
                 'display': 'Site uses insecure HTTP instead of HTTPS',
             })
         headers_lower = {k.lower(): v for k, v in response_headers.items()}
-        critical_headers = [
-            ('content-security-policy', 'Content-Security-Policy', 'Protects against XSS'),
-            ('x-frame-options', 'X-Frame-Options', 'Prevents clickjacking'),
-            ('strict-transport-security', 'HSTS', 'Forces HTTPS'),
-        ]
+        csp = (headers_lower.get('content-security-policy') or '').lower()
         missing = []
-        for key, name, purpose in critical_headers:
-            if key not in headers_lower:
-                missing.append({'header': name, 'purpose': purpose})
+        if 'content-security-policy' not in headers_lower:
+            missing.append({'header': 'Content-Security-Policy',
+                            'purpose': 'Protects against XSS'})
+        # CSP frame-ancestors is the modern replacement for X-Frame-Options.
+        # A site using it is protected and must not be told otherwise.
+        if 'x-frame-options' not in headers_lower and 'frame-ancestors' not in csp:
+            missing.append({'header': 'X-Frame-Options',
+                            'purpose': 'Prevents clickjacking'})
+        # HSTS only means anything over HTTPS. On an HTTP page the protocol is
+        # already reported above, and charging twice for one root cause drags
+        # the score down for a single fault.
+        if is_https and 'strict-transport-security' not in headers_lower:
+            missing.append({'header': 'HSTS', 'purpose': 'Forces HTTPS'})
         if missing:
             header_names = ', '.join(m['header'] for m in missing)
             findings.append({
@@ -471,6 +555,10 @@ def check_security(page_url, response_headers):
 
 # Bundled axe-core (the industry-standard WCAG engine). Injected into each page.
 AXE_PATH = os.path.join(os.path.dirname(__file__), 'axe.min.js')
+
+# Rules that already have a dedicated check and a weighted category of their
+# own. Reporting them here as well charged one defect twice over.
+AXE_RULES_COVERED_ELSEWHERE = {'image-alt'}
 
 
 def check_accessibility_axe(page):
@@ -496,6 +584,8 @@ def check_accessibility_axe(page):
 
     findings = []
     for v in results or []:
+        if v.get('id') in AXE_RULES_COVERED_ELSEWHERE:
+            continue
         nodes = v.get('nodes') or []
         first_target = ''
         if nodes and nodes[0].get('target'):
@@ -572,13 +662,22 @@ def check_accessibility_heuristic(page):
             try:
                 inp_id = inp.get_attribute('id')
                 aria_label = inp.get_attribute('aria-label')
-                placeholder = inp.get_attribute('placeholder')
+                aria_labelledby = inp.get_attribute('aria-labelledby')
                 has_label = False
                 if inp_id:
                     label = page.query_selector(f'label[for="{inp_id}"]')
                     if label:
                         has_label = True
-                if not has_label and not aria_label and not placeholder:
+                if not has_label:
+                    # A label wrapping its input needs no for attribute.
+                    try:
+                        has_label = bool(inp.evaluate("el => !!el.closest('label')"))
+                    except Exception:
+                        has_label = False
+                # A placeholder is deliberately not accepted here: it vanishes
+                # as soon as the user types and is not an accessible name, so
+                # treating it as a label hid genuinely unlabelled fields.
+                if not has_label and not aria_label and not aria_labelledby:
                     input_name = inp.get_attribute('name') or 'unnamed'
                     findings.append({
                         'issue': f'Input field "{input_name}" has no label',
@@ -595,7 +694,26 @@ def check_accessibility_heuristic(page):
     return findings
 
 
-TAP_TARGET_CAP = 50
+TAP_TARGET_CAP = 150
+
+
+def _is_inline_text_link(element):
+    """
+    True for a link sitting inside a run of text. WCAG exempts these from
+    target-size rules because an inline link cannot be padded to 44px without
+    breaking the sentence around it. A link styled as a button reports
+    inline-block or block and is still measured.
+    """
+    try:
+        # One round trip, not two: this runs per control and the cap is high.
+        info = element.evaluate(
+            "el => ({tag: el.nodeName.toLowerCase(),"
+            " display: getComputedStyle(el).display})")
+    except Exception:
+        return False
+    if not isinstance(info, dict):
+        return False
+    return info.get('tag') == 'a' and info.get('display') == 'inline'
 
 
 def check_mobile(page):
@@ -607,6 +725,8 @@ def check_mobile(page):
         if scroll_width > client_width + 5:
             findings.append({
                 'issue': f'Page has horizontal scrolling on mobile ({scroll_width}px vs {client_width}px)',
+                # Stable identity: the sentence carries per-page pixel widths.
+                'issue_type': 'horizontal_scroll',
                 'severity': 'serious',
                 'element_selector': 'body',
                 'display': 'Page requires horizontal scrolling on mobile',
@@ -620,6 +740,8 @@ def check_mobile(page):
         small_targets = []
         for el in clickables:
             try:
+                if _is_inline_text_link(el):
+                    continue
                 box = el.bounding_box()
                 if box and box['width'] > 0 and box['height'] > 0 and (box['width'] < 44 or box['height'] < 44):
                     text = (el.inner_text() or '').strip()[:30] or el.get_attribute('aria-label') or ''
@@ -640,6 +762,8 @@ def check_mobile(page):
             count = len(small_targets)
             findings.append({
                 'issue': f'{count} buttons/links are too small to tap on mobile',
+                # Stable identity: the sentence carries a per-page count.
+                'issue_type': 'tap_targets_too_small',
                 # A couple of small controls is a nuisance; a page full of them
                 # means mobile users cannot reliably use it at all.
                 'severity': 'serious' if count > 10 else 'moderate',
@@ -652,6 +776,158 @@ def check_mobile(page):
             })
     except Exception as e:
         logger.warning("mobile check error: %s", e)
+    return findings, coverage
+
+
+
+# Words that mean a control does something you cannot take back. The dead
+# control check never clicks these. A crawler that deletes a record, places an
+# order or logs itself out is far worse than a dead button it failed to spot.
+DESTRUCTIVE_LABELS = (
+    'delete', 'remove', 'destroy', 'erase', 'clear', 'reset', 'discard',
+    'pay', 'buy', 'purchase', 'order', 'checkout', 'subscribe', 'donate',
+    'submit', 'send', 'confirm', 'apply', 'save', 'publish', 'archive',
+    'log out', 'logout', 'sign out', 'signout', 'deactivate', 'unsubscribe',
+    'cancel',
+)
+
+# Only things that are clickable but are not navigation. A real link already
+# has its destination checked by check_broken_links.
+DEAD_CONTROL_SELECTOR = 'button, [role="button"], a[href="#"], a[href=""], a:not([href])'
+
+DEAD_CONTROL_CAP = 15
+DEAD_CONTROL_SETTLE_MS = 400
+
+
+def _control_label(element):
+    """What a person would call this control."""
+    text = ''
+    try:
+        text = (element.inner_text() or '').strip()
+    except Exception:
+        text = ''
+    if not text:
+        try:
+            text = (element.get_attribute('aria-label') or '').strip()
+        except Exception:
+            text = ''
+    return text[:60]
+
+
+def _is_destructive(label):
+    lowered = (label or '').lower()
+    return any(word in lowered for word in DESTRUCTIVE_LABELS)
+
+
+def _control_state(page):
+    """
+    A cheap fingerprint of everything a working control could change.
+
+    Focus is deliberately left out: clicking always moves focus, so including
+    it would make every control look alive.
+    """
+    return page.evaluate("""() => ({
+        url: location.href,
+        html: document.documentElement.innerHTML.length,
+        nodes: document.getElementsByTagName('*').length,
+        requests: (performance.getEntriesByType('resource') || []).length,
+        storage: localStorage.length + sessionStorage.length,
+    })""")
+
+
+def check_dead_controls(page, page_url, cap=DEAD_CONTROL_CAP):
+    """
+    Find controls that do nothing whatsoever when clicked.
+
+    This is the one defect nothing else here can see: a button wired to
+    nothing raises no console error, breaks no link and violates no
+    accessibility rule. The only way to know is to click it and watch.
+
+    Clicking a live site is destructive, so this is opt-in per test case and
+    refuses to touch anything inside a form, anything disabled, any submit or
+    reset control, and anything whose label suggests it cannot be undone.
+
+    Returns (findings, coverage).
+    """
+    findings = []
+    coverage = {'controls_found': 0, 'controls_clicked': 0,
+                'skipped': 0, 'truncated': False}
+    try:
+        controls = page.query_selector_all(DEAD_CONTROL_SELECTOR)
+    except Exception as e:
+        logger.warning("dead controls: could not enumerate: %s", e)
+        return findings, coverage
+
+    coverage['controls_found'] = len(controls)
+
+    for element in controls:
+        if coverage['controls_clicked'] >= cap:
+            coverage['truncated'] = True
+            break
+
+        label = _control_label(element)
+        try:
+            enabled = element.is_enabled()
+        except Exception:
+            enabled = False
+        # A disabled control doing nothing is correct behaviour, not a defect.
+        if not enabled or _is_destructive(label):
+            coverage['skipped'] += 1
+            continue
+        try:
+            if (element.get_attribute('type') or '') in ('submit', 'reset'):
+                coverage['skipped'] += 1
+                continue
+            if element.evaluate("el => !!el.closest('form')"):
+                coverage['skipped'] += 1
+                continue
+        except Exception:
+            coverage['skipped'] += 1
+            continue
+
+        try:
+            before = _control_state(page)
+        except Exception as e:
+            logger.warning("dead controls: could not read page state: %s", e)
+            break
+
+        try:
+            element.click(timeout=2000)
+        except Exception:
+            # The click never landed, so nothing was learned about this
+            # control and nothing is claimed about it.
+            continue
+
+        coverage['controls_clicked'] += 1
+        try:
+            page.wait_for_timeout(DEAD_CONTROL_SETTLE_MS)
+            after = _control_state(page)
+        except Exception:
+            continue
+
+        if after != before:
+            if after.get('url') != before.get('url'):
+                # It navigated, which means it works. Go back so the rest of
+                # the crawl still happens on the page we were auditing.
+                try:
+                    page.goto(page_url, wait_until='domcontentloaded')
+                except Exception as e:
+                    logger.warning("dead controls: could not return to %s: %s",
+                                   page_url, e)
+            continue
+
+        shown = label or '(unlabelled)'
+        findings.append({
+            'issue': f'Control does nothing when clicked: {shown}',
+            'issue_type': 'dead_control',
+            'severity': 'serious',
+            'control': label,
+            'element_selector': _safe_get_selector(element),
+            'element_text': label,
+            'bounding_box': _safe_get_bounding_box(element),
+            'display': f'"{shown}" does nothing when clicked',
+        })
+
     return findings, coverage
 
 
@@ -673,7 +949,8 @@ def check_performance(page, page_load_ms):
     used to be reported as a hardcoded 0 on every single run.
     """
     findings = []
-    metrics = {'page_size_kb': 0, 'request_count': 0, 'heaviest': []}
+    metrics = {'page_size_kb': 0, 'request_count': 0, 'heaviest': [],
+               'unmeasured_resources': 0}
 
     try:
         data = page.evaluate("""() => {
@@ -681,8 +958,17 @@ def check_performance(page, page_load_ms):
             const nav = (performance.getEntriesByType('navigation') || [])[0];
             let bytes = nav && nav.transferSize ? nav.transferSize : 0;
             const items = [];
+            let unmeasured = 0;
             for (const r of res) {
-                const size = r.transferSize || 0;
+                // transferSize is 0 for cross-origin resources without
+                // Timing-Allow-Origin and for anything served from cache.
+                // decodedBodySize is the next best estimate; when both are
+                // zero the resource cannot be measured from here at all.
+                let size = r.transferSize || 0;
+                if (!size) {
+                    size = r.decodedBodySize || 0;
+                    if (!size) unmeasured++;
+                }
                 bytes += size;
                 items.push({
                     name: r.name,
@@ -692,7 +978,8 @@ def check_performance(page, page_load_ms):
                 });
             }
             items.sort((a, b) => b.size_kb - a.size_kb);
-            return { bytes: bytes, count: res.length, top: items.slice(0, 5) };
+            return { bytes: bytes, count: res.length, top: items.slice(0, 5),
+                     unmeasured: unmeasured };
         }""") or {}
     except Exception as e:
         logger.warning("performance check error: %s", e)
@@ -702,6 +989,7 @@ def check_performance(page, page_load_ms):
     metrics['page_size_kb'] = page_size_kb
     metrics['request_count'] = data.get('count') or 0
     metrics['heaviest'] = data.get('top') or []
+    metrics['unmeasured_resources'] = data.get('unmeasured') or 0
 
     if page_load_ms and page_load_ms >= SLOW_PAGE_MS:
         severity = 'serious' if page_load_ms >= VERY_SLOW_PAGE_MS else 'moderate'
@@ -749,8 +1037,13 @@ def check_performance(page, page_load_ms):
 
 def filter_console_errors(console_messages):
     filtered = []
-    skip_patterns = ['unrecognized feature', 'deprecated', 'devtools', 'extension', 'favicon',
-                     'webkit', 'preload', 'sourcemap', 'mixed content']
+    # Deliberately NOT skipped: mixed content is a real security defect, and
+    # the console is the one place it shows up. 'extension' is matched only as
+    # a browser-extension URL scheme, because as a bare word it also swallowed
+    # genuine application errors such as "file extension not supported".
+    skip_patterns = ['unrecognized feature', 'deprecated', 'devtools', 'favicon',
+                     'chrome-extension://', 'moz-extension://', 'safari-extension://',
+                     'webkit', 'preload', 'sourcemap']
     for msg in console_messages:
         if msg.get('type') != 'error':
             continue
@@ -813,9 +1106,29 @@ def finding_severity(category, finding):
     return DEFAULT_SEVERITY.get(category, 'moderate')
 
 
+def finding_weight(finding):
+    """
+    How many times over one finding counts.
+
+    axe reports a single finding per rule together with the number of elements
+    breaking it, so a rule broken by 200 elements has to cost more than one
+    broken by a single element. Growth is logarithmic, matching the curve used
+    everywhere else here, so one noisy rule can never swamp the whole score.
+    """
+    count = 1
+    if isinstance(finding, dict):
+        raw = finding.get('count')
+        if isinstance(raw, int) and raw > 1:
+            count = raw
+    return 1 + math.log10(count)
+
+
 def category_penalty(category, items):
     """Total severity cost of one category's findings."""
-    return sum(SEVERITY_PENALTY[finding_severity(category, f)] for f in items or [])
+    return sum(
+        SEVERITY_PENALTY[finding_severity(category, f)] * finding_weight(f)
+        for f in items or []
+    )
 
 
 def category_subscore(category, items):
@@ -852,11 +1165,51 @@ def score_breakdown(findings_by_category):
     return breakdown
 
 
-def calculate_health_score(findings_by_category):
-    """Weighted average of the per-category subscores. Always 1..100."""
+def measured_categories(step_summary=None, mobile_checked=True,
+                        accessibility_measured=True, controls_checked=False):
+    """
+    The categories a run actually measured.
+
+    A category that was never checked has no findings, and the weighted
+    average read that as a perfect result. That rewarded not looking: an
+    authenticated crawl skips the mobile checks and used to collect full
+    marks for them anyway, and a run where no step ever executed banked the
+    whole functional weight, the largest of the nine.
+
+    Mobile counts as measured unless the crawl skipped it. Functional counts
+    only once at least one step actually executed, because steps the runner
+    could not read never ran and so verify nothing about the site.
+    """
+    measured = set(CATEGORY_WEIGHT)
+    if not mobile_checked:
+        measured.discard('mobile_issues')
+    # When axe-core could not run, the fallback finds far less, so the run
+    # produced fewer findings and the score went UP because a tool broke.
+    if not accessibility_measured:
+        measured.discard('accessibility_issues')
+    summary = step_summary or {}
+    executed = summary.get('passed', 0) + summary.get('failed', 0)
+    # Clicking controls is a functional check too, so a run that only did
+    # that still measured the category and deserves credit for a clean result.
+    if not executed and not controls_checked:
+        measured.discard('functional_issues')
+    return measured
+
+
+def calculate_health_score(findings_by_category, measured=None):
+    """
+    Weighted average of the per-category subscores. Always 1..100.
+
+    `measured` names the categories this run actually checked. Anything
+    outside it is left out of the average rather than counted as perfect,
+    because a check that never ran is not a check that passed. Passing
+    nothing keeps the original behaviour of scoring all nine.
+    """
     total_weight = 0
     weighted_sum = 0
     for category, weight in CATEGORY_WEIGHT.items():
+        if measured is not None and category not in measured:
+            continue
         items = findings_by_category.get(category) or []
         weighted_sum += weight * category_subscore(category, items)
         total_weight += weight
@@ -880,6 +1233,8 @@ def summarise_coverage(all_pages_coverage):
     page_size_total = 0
     page_size_max = 0
     request_total = 0
+    unmeasured_total = 0
+    steps_total = steps_unreadable = 0
 
     for cov in all_pages_coverage or []:
         perf = cov.get('performance') or {}
@@ -887,6 +1242,7 @@ def summarise_coverage(all_pages_coverage):
         page_size_total += size
         page_size_max = max(page_size_max, size)
         request_total += perf.get('request_count', 0)
+        unmeasured_total += perf.get('unmeasured_resources', 0)
 
         link = cov.get('links') or {}
         links_found += link.get('links_found', 0)
@@ -897,6 +1253,10 @@ def summarise_coverage(all_pages_coverage):
         taps_found += mob.get('tap_targets_found', 0)
         taps_checked += mob.get('tap_targets_checked', 0)
         taps_truncated = taps_truncated or mob.get('truncated', False)
+
+        steps = cov.get('steps') or {}
+        steps_total += steps.get('total', 0)
+        steps_unreadable += steps.get('unreadable', 0)
 
         if cov.get('mobile_skipped_reason'):
             mobile_skipped_reason = cov['mobile_skipped_reason']
@@ -921,6 +1281,18 @@ def summarise_coverage(all_pages_coverage):
             f'limited accessibility check was used there. Real accessibility '
             f'problems may have been missed.'
         )
+    if steps_unreadable:
+        notes.append(
+            f'{steps_unreadable} of {steps_total} written step(s) could not be '
+            f'understood, so that part of the workflow was never exercised. '
+            f'Rewording them would test more of the site.'
+        )
+    if unmeasured_total:
+        notes.append(
+            f'{unmeasured_total} resource(s) would not report their size, which '
+            f'is normal for files served from a CDN. The real page weight is '
+            f'higher than the figure shown.'
+        )
 
     return {
         'notes': notes,
@@ -935,6 +1307,9 @@ def summarise_coverage(all_pages_coverage):
         'page_size_kb_total': page_size_total,
         'page_size_kb_heaviest': page_size_max,
         'request_count': request_total,
+        'unmeasured_resources': unmeasured_total,
+        'steps_total': steps_total,
+        'steps_unreadable': steps_unreadable,
     }
 
 
@@ -1290,8 +1665,13 @@ FINDING_KEYERS = {
     'missing_alt_images': lambda i: i.get('src'),
     'seo_issues': lambda i: i.get('issue'),
     'security_issues': lambda i: i.get('issue'),
-    'accessibility_issues': lambda i: (i.get('rule'), i.get('element_selector')),
-    'mobile_issues': lambda i: i.get('issue'),
+    # The rule is the defect. axe names whichever element happened to be first
+    # on that page, which differs page to page and split one site-wide rule
+    # breach into one finding per page.
+    'accessibility_issues': lambda i: i.get('rule') or i.get('element_selector'),
+    # issue_type is stable; the issue sentence embeds per-page counts and pixel
+    # widths, so keying on it made every page a brand new finding.
+    'mobile_issues': lambda i: i.get('issue_type') or i.get('issue'),
     'performance_issues': lambda i: i.get('issue'),
 }
 
@@ -1787,6 +2167,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             return False
     base_url = tc['base_url']
     crawl_pages = bool(tc.get('crawl_pages'))
+    # Off unless this test case opted in: the check clicks real controls.
+    click_controls = bool(tc.get('check_dead_controls'))
     max_pages = int(tc.get('max_pages') or 10)
     if max_pages < 1:
         max_pages = 1
@@ -2053,6 +2435,16 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         page_load_ms=page_load_ms)
                     if page_idx == 0:
                         page_findings['functional_issues'] = step_findings
+                        page_coverage['steps'] = step_summary
+
+                    # A control wired to nothing is a functional defect, so it
+                    # belongs with the workflow failures rather than in a
+                    # category of its own.
+                    if click_controls:
+                        dead, dead_coverage = check_dead_controls(page, page_url)
+                        page_findings['functional_issues'] = (
+                            page_findings.get('functional_issues') or []) + dead
+                        page_coverage['dead_controls'] = dead_coverage
                     page_findings = tag_findings_with_page(page_findings, page_url)
                     all_pages_coverage.append(page_coverage)
 
@@ -2095,7 +2487,18 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                             logger.warning("crawl link-discovery error: %s", e)
 
                     page_issues_found = sum(len(items) for items in page_findings.values())
-                    page_health_score = calculate_health_score(page_findings)
+                    # Steps only ever run on the first page, so every later
+                    # page would otherwise collect the functional weight in
+                    # full for a check that never happened there.
+                    page_health_score = calculate_health_score(
+                        page_findings,
+                        measured=measured_categories(
+                            step_summary if page_idx == 0 else None,
+                            mobile_checked=not session_used,
+                            accessibility_measured=(
+                                page_coverage.get('accessibility_engine')
+                                == 'axe-core'),
+                            controls_checked=click_controls))
 
                     all_pages_findings.append(page_findings)
                     per_page_records.append({
@@ -2145,7 +2548,17 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 for category, items in merged_findings.items()
             }
 
-            health_score = calculate_health_score(merged_findings)
+            # axe running on even one page means the accessibility findings
+            # are real; it is only when it never ran that the number is empty
+            # for the wrong reason.
+            axe_ran = any((c or {}).get('accessibility_engine') == 'axe-core'
+                          for c in all_pages_coverage)
+            health_score = calculate_health_score(
+                merged_findings,
+                measured=measured_categories(step_summary,
+                                             mobile_checked=not session_used,
+                                             accessibility_measured=axe_ran,
+                                             controls_checked=click_controls))
             breakdown = score_breakdown(merged_findings)
             coverage_summary = summarise_coverage(all_pages_coverage)
             top_severity = worst_severity(merged_findings)

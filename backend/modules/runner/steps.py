@@ -54,8 +54,14 @@ _PATTERNS = [
         r'^(?:expect|verify|check|assert)\s+(?:to\s+)?(?:see\s+)?(?:the\s+)?text\s+(?P<value>.+)$', re.I)),
     ('expect_text', re.compile(
         r'^(?:i\s+)?should\s+see\s+(?P<value>.+)$', re.I)),
+    # A bare "check X" or "verify X" is far more often an instruction meant
+    # for a person than a literal string to look for on the page. Guessing
+    # turned prose like "check all validations on empty field" into an
+    # assertion that could never pass, and a failed step is reported as a
+    # critical defect in the site, which had done nothing wrong. Quoting the
+    # value states the intent plainly, so that form is still accepted.
     ('expect_text', re.compile(
-        r'^(?:expect|verify|check|assert|see)\s+(?P<value>.+)$', re.I)),
+        r'^(?:expect|verify|check|assert|see)\s+(?P<value>"[^"]+"|\'[^\']+\')$', re.I)),
     ('goto', re.compile(
         r'^(?:open|go\s+to|visit|navigate\s+to|browse\s+to)\s+(?P<target>.+)$', re.I)),
     ('type', re.compile(
@@ -335,17 +341,10 @@ def run_steps(page, steps_text, base_url=None, on_step=None):
                 'screenshot': record['screenshot'],
                 'display': f'Step {index + 1} failed: {outcome["message"]}',
             })
-        elif outcome['status'] == 'unreadable':
-            findings.append({
-                'issue': f'Step {index + 1} could not be understood: {step["raw"]}',
-                'severity': 'moderate',
-                'step_index': index,
-                'step': step['raw'],
-                'reason': outcome['message'],
-                'detail': outcome.get('detail', ''),
-                'element_selector': 'document',
-                'display': f'Step {index + 1} is not a step the runner understands',
-            })
+        # A step the runner cannot read never reached the site, so it is not
+        # a defect in the site. It stays in `results` for whoever wrote it and
+        # is counted in the coverage notes, but it is not scored against the
+        # thing under test, which never had a chance to fail it.
 
     return results, findings
 
