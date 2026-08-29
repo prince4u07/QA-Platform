@@ -372,12 +372,12 @@ def check_broken_links(page, base_url):
         except requests.RequestException:
             return 0
 
-    def _is_broken(status):
+    def _is_broken(url, status):
         # 401/403/429/503 are auth / anti-bot / rate-limit / transient responses,
-        # NOT broken links — flagging them was pure noise. A genuinely broken link
-        # is a definitive 404/410/5xx, or a total connection failure (0).
+        # NOT broken links. External sites also block scanners, so status 0 is
+        # only useful evidence for a link on the site currently being tested.
         if status == 0:
-            return True
+            return urlparse(url).netloc == urlparse(base_url).netloc
         if status in (401, 403, 429, 503):
             return False
         return status >= 400
@@ -405,7 +405,7 @@ def check_broken_links(page, base_url):
                     status = fut.result()
                 except Exception:
                     status = 0
-                if _is_broken(status):
+                if _is_broken(url, status):
                     bad[url] = status
     except Exception as e:
         logger.warning("broken_links: pool error: %s", e)
