@@ -104,8 +104,6 @@ CREATE TABLE IF NOT EXISTS test_cases (
     priority             VARCHAR(20) DEFAULT 'Medium',   -- High | Medium | Low
     status               VARCHAR(20) DEFAULT 'Pending',  -- Pass | Fail | Pending
     test_type            VARCHAR(20) DEFAULT 'manual',   -- manual | automated
-    automation_framework VARCHAR(50) DEFAULT 'none',
-    test_purpose         VARCHAR(30) DEFAULT 'functional',
     crawl_pages          BOOLEAN     DEFAULT FALSE,
     max_pages            INT         DEFAULT 1,          -- clamped to 1..100 by the API
     -- Opt-in only: clicking controls on a live site can submit forms

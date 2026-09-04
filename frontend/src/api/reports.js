@@ -12,6 +12,10 @@ const getAuthHeader = () => ({
 export const getSummary = () =>
   axios.get(`${API_URL}/summary`, getAuthHeader());
 
+// Findings from the latest run for each test case
+export const getDetectedIssues = () =>
+  axios.get(`${API_URL}/detected-issues`, getAuthHeader());
+
 // Health score over time (line chart)
 export const getHealthTrend = () =>
   axios.get(`${API_URL}/health-trend`, getAuthHeader());

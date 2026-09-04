@@ -35,7 +35,6 @@ const manualTest = {
   priority: 'Medium',
   status: 'Pending',
   test_type: 'manual',
-  test_purpose: 'exploratory',
   max_pages: 10,
 };
 
@@ -77,26 +76,30 @@ describe('Test case workflow', () => {
     expect(screen.queryByRole('button', { name: /^fail$/i })).not.toBeInTheDocument();
   });
 
-  it('creates a manual usability test with a pending run result', async () => {
+  it('creates a manual test with a pending run result and no status field', async () => {
     const user = userEvent.setup();
     renderPage([]);
     await screen.findByText(/no test cases yet/i);
 
     await user.click(screen.getByRole('button', { name: /new test case/i }));
     await fillRequiredFields(user);
-    await user.selectOptions(screen.getByRole('combobox', { name: /test purpose/i }), 'usability');
     await user.click(screen.getByRole('button', { name: /create test case/i }));
 
     await waitFor(() => expect(testcasesApi.createTestCase).toHaveBeenCalled());
     expect(testcasesApi.createTestCase).toHaveBeenCalledWith(expect.objectContaining({
       test_type: 'manual',
-      test_purpose: 'usability',
-      automation_framework: 'none',
     }));
-    expect(testcasesApi.createTestCase.mock.calls[0][0]).not.toHaveProperty('status');
+    const payload = testcasesApi.createTestCase.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('status');
+    // The purpose field was removed: it was stored but never read by the
+    // runner, the reports, or the UI, so it must not be sent either.
+    expect(payload).not.toHaveProperty('test_purpose');
+    // The framework field was removed too: the only runner is Playwright, so
+    // there is nothing to choose or store.
+    expect(payload).not.toHaveProperty('automation_framework');
   });
 
-  it('offers automated purposes and records Playwright as the runner', async () => {
+  it('crawls the whole site when automated and never sends a framework claim', async () => {
     const user = userEvent.setup();
     renderPage([]);
     await screen.findByText(/no test cases yet/i);
@@ -105,21 +108,31 @@ describe('Test case workflow', () => {
     await fillRequiredFields(user);
     await user.click(screen.getByRole('radio', { name: /automated/i }));
 
-    const purpose = screen.getByRole('combobox', { name: /test purpose/i });
-    expect(within(purpose).getByRole('option', { name: /regression/i })).toBeInTheDocument();
-    expect(within(purpose).getByRole('option', { name: /performance/i })).toBeInTheDocument();
-    expect(within(purpose).queryByRole('option', { name: /usability/i })).not.toBeInTheDocument();
+    // The dead-control check only applies to automated runs, so its toggle
+    // appears with the mode rather than being shown and ignored for manual.
+    expect(screen.getByRole('checkbox', { name: /click controls/i })).toBeInTheDocument();
 
-    await user.selectOptions(purpose, 'regression');
     await user.click(screen.getByRole('button', { name: /create test case/i }));
 
     await waitFor(() => expect(testcasesApi.createTestCase).toHaveBeenCalled());
     expect(testcasesApi.createTestCase).toHaveBeenCalledWith(expect.objectContaining({
       test_type: 'automated',
-      test_purpose: 'regression',
-      automation_framework: 'playwright',
       crawl_pages: true,
     }));
+    expect(testcasesApi.createTestCase.mock.calls[0][0]).not.toHaveProperty('automation_framework');
+  });
+
+  it('hides the dead-control toggle for manual tests, where it does nothing', async () => {
+    const user = userEvent.setup();
+    renderPage([]);
+    await screen.findByText(/no test cases yet/i);
+
+    await user.click(screen.getByRole('button', { name: /new test case/i }));
+    await fillRequiredFields(user);
+    expect(screen.queryByRole('checkbox', { name: /click controls/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: /automated/i }));
+    expect(screen.getByRole('checkbox', { name: /click controls/i })).toBeInTheDocument();
   });
 
   it('leaves control clicking off unless it is switched on', async () => {
@@ -129,6 +142,7 @@ describe('Test case workflow', () => {
 
     await user.click(screen.getByRole('button', { name: /new test case/i }));
     await fillRequiredFields(user);
+    await user.click(screen.getByRole('radio', { name: /automated/i }));
     await user.click(screen.getByRole('button', { name: /create test case/i }));
 
     await waitFor(() => expect(testcasesApi.createTestCase).toHaveBeenCalled());
@@ -144,6 +158,7 @@ describe('Test case workflow', () => {
 
     await user.click(screen.getByRole('button', { name: /new test case/i }));
 
+    await user.click(screen.getByRole('radio', { name: /automated/i }));
     const optIn = screen.getByRole('checkbox', { name: /click controls/i });
     expect(optIn).not.toBeChecked();
     expect(screen.getByText(/skips anything inside a form/i)).toBeInTheDocument();

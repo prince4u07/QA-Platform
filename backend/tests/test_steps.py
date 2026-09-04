@@ -151,6 +151,19 @@ class _ScriptedLocator:
         self.page.calls.append(('fill', self.target, value))
         self.page._maybe_fail('fill')
 
+    def select_option(self, value=None, **_kw):
+        chosen = _kw.get('label', value)
+        self.page.calls.append(('select_option', self.target, chosen))
+        self.page._maybe_fail('select_option')
+
+    def check(self, **_kw):
+        self.page.calls.append(('check', self.target))
+        self.page._maybe_fail('check')
+
+    def uncheck(self, **_kw):
+        self.page.calls.append(('uncheck', self.target))
+        self.page._maybe_fail('uncheck')
+
     def wait_for(self, **_kw):
         self.page._maybe_fail('wait')
 
@@ -265,3 +278,175 @@ def test_the_documented_assertion_forms_all_still_work():
     assert parse_step('Expect text Welcome back')['action'] == 'expect_text'
     assert parse_step('Expect url contains /dashboard')['action'] == 'expect_url'
     assert parse_step('I should see Welcome back')['action'] == 'expect_text'
+
+
+# ---------------- dropdowns, checkboxes, absence, exact URLs ----------------
+
+def test_parses_dropdown_selection_both_ways_round():
+    a = parse_step('Select Extra Large in Size')
+    assert (a['action'], a['value'], a['target']) == ('select_option', 'Extra Large', 'Size')
+
+    b = parse_step('Set Country to India')
+    assert (b['action'], b['value'], b['target']) == ('select_option', 'India', 'Country')
+
+
+def test_a_bare_select_is_still_a_click():
+    """Navigation menus use the word Select; only "X in Y" names an option."""
+    assert parse_step('Select the Photos tab')['action'] == 'click'
+
+
+def test_parses_checkbox_and_radio_actions():
+    assert parse_step('Tick the Terms checkbox')['action'] == 'check'
+    assert parse_step('Tick Newsletter')['target'] == 'Newsletter'
+    assert parse_step('Check the Newsletter box')['action'] == 'check'
+    assert parse_step('Uncheck Newsletter')['action'] == 'uncheck'
+    assert parse_step('Untick the Terms checkbox')['target'] == 'Terms'
+
+
+def test_a_bare_check_is_still_not_guessed_to_be_a_control():
+    """Prose safety from the original runner must survive the new actions."""
+    assert parse_step('check all validations on empty field')['action'] == 'unknown'
+    assert parse_step('Check "Order confirmed"')['action'] == 'expect_text'
+
+
+def test_clearing_a_field_needs_the_control_word():
+    assert parse_step('Clear the Search box')['action'] == 'clear'
+    assert parse_step('Clear the Search box')['target'] == 'Search'
+    # A button labelled Clear is a click, not a field to empty.
+    assert parse_step('Clear cart')['action'] == 'unknown'
+
+
+def test_parses_absence_assertions():
+    for line in ('Expect no "Item removed"', 'I should not see Error badge',
+                 'Expect text "Loading" to be gone', 'Expect not to see Cart items'):
+        step = parse_step(line)
+        assert step['action'] == 'expect_no_text', line
+
+
+def test_parses_exact_url_assertions():
+    a = parse_step('Expect url to be /dashboard')
+    assert (a['action'], a['value']) == ('expect_url_exact', '/dashboard')
+
+    b = parse_step('The url should be https://site.test/dashboard')
+    assert (b['action'], b['value']) == ('expect_url_exact', 'https://site.test/dashboard')
+
+    # The "contains" wording still reads as contains.
+    assert parse_step('Expect url contains /dashboard')['action'] == 'expect_url'
+
+
+def test_parses_a_wait_step_with_its_cap_in_mind():
+    assert parse_step('Wait 2 seconds')['action'] == 'wait_seconds'
+    assert parse_step('sleep 3')['action'] == 'wait_seconds'
+
+
+def test_a_dropdown_selection_uses_the_label_fallback():
+    page = _ScriptedPage()
+    results, _ = run_steps(page, 'Select Extra Large in Size')
+
+    assert results[0]['status'] == 'passed'
+    assert ('select_option', 'Size', 'Extra Large') in page.calls
+
+
+def test_a_failing_dropdown_selection_is_reported_like_any_step():
+    page = _ScriptedPage(fail_on='select_option')
+    results, findings = run_steps(page, 'Set Country to India')
+
+    assert results[0]['status'] == 'failed'
+    assert len(findings) == 1
+
+
+def test_tick_and_clear_drive_the_control_they_named():
+    page = _ScriptedPage()
+    # chr(10) rather than an escape sequence, so the two steps cannot be
+    # mistaken for one line no matter how this file is edited later.
+    two_steps = 'Tick the Terms checkbox' + chr(10) + 'Clear the Search box'
+    results, _ = run_steps(page, two_steps)
+
+    assert [r['status'] for r in results] == ['passed', 'passed']
+    assert ('check', 'Terms') in page.calls
+    assert ('fill', 'Search', '') in page.calls
+
+
+def test_expect_no_text_passes_when_nothing_matches():
+    page = _ScriptedPage()
+    results, findings = run_steps(page, 'Expect no "Item removed"')
+
+    assert results[0]['status'] == 'passed'
+    assert findings == []
+
+
+def test_expect_no_text_fails_while_the_text_is_still_there(monkeypatch):
+    from modules.runner import steps as steps_module
+
+    class _StubbornLocator:
+        def count(self):
+            return 1
+
+    page = _ScriptedPage()
+    monkeypatch.setattr(page, 'get_by_text', lambda text, **_kw: _StubbornLocator())
+    monkeypatch.setattr(steps_module, 'STEP_TIMEOUT_MS', 300)
+
+    results, findings = run_steps(page, 'Expect no "Item removed"')
+
+    assert results[0]['status'] == 'failed'
+    assert len(findings) == 1
+
+
+def test_exact_url_assertion_checks_the_path(monkeypatch):
+    from modules.runner import steps as steps_module
+
+    page = _ScriptedPage()
+    page.url = 'https://site.test/dashboard?tab=overview'
+    results, _ = run_steps(page, 'Expect url to be /dashboard')
+    assert results[0]['status'] == 'passed'
+
+    page.url = 'https://site.test/settings'
+    results, _ = run_steps(page, 'Expect url to be /dashboard')
+    assert results[0]['status'] == 'failed'
+    assert '/settings' in results[0]['detail']
+
+
+def test_wait_seconds_honours_the_step_and_respects_the_cap(monkeypatch):
+    from modules.runner import steps as steps_module
+
+    slept = []
+    monkeypatch.setattr(steps_module.time, 'sleep', slept.append)
+
+    page = _ScriptedPage()
+    results, _ = run_steps(page, 'Wait 60 seconds')
+    assert results[0]['status'] == 'passed'
+    assert slept == [steps_module.MAX_WAIT_SECONDS]
+
+
+def test_uncheck_unticks_the_control_it_names():
+    """Unticking is the mirror of ticking — same locator strategy, opposite action."""
+    page = _ScriptedPage()
+    results, _ = run_steps(page, 'Uncheck the Newsletter checkbox')
+
+    assert results[0]['status'] == 'passed'
+    assert ('uncheck', 'Newsletter') in page.calls
+
+
+def test_press_maps_common_key_aliases_to_playwright_names():
+    """A tester writes 'esc' or 'return'; the runner sends the Playwright key name."""
+    page = _ScriptedPage()
+    results, _ = run_steps(page, 'Press Enter')
+
+    assert results[0]['status'] == 'passed'
+    assert ('press', 'Enter') in page.calls
+
+    # 'esc' is a common shorthand that must resolve to 'Escape'.
+    page = _ScriptedPage()
+    results, _ = run_steps(page, 'Press esc')
+    assert results[0]['status'] == 'passed'
+    assert ('press', 'Escape') in page.calls
+
+
+def test_wait_for_element_blocks_until_visible_then_passes():
+    """A bare 'Wait for X' step blocks until the element is visible, then passes."""
+    page = _ScriptedPage()
+    results, _ = run_steps(page, 'Wait for the Save button')
+
+    assert results[0]['status'] == 'passed'
+    assert 'Save button' in results[0]['message']
+

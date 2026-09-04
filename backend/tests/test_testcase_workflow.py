@@ -60,7 +60,6 @@ def testcase(**overrides):
         'steps': 'Open /checkout',
         'expected_result': 'Checkout is shown',
         'test_type': 'manual',
-        'test_purpose': 'usability',
     }
     payload.update(overrides)
     return payload
@@ -72,25 +71,67 @@ def test_a_new_test_starts_pending_and_uses_the_real_runner_framework(client):
     response = http.post('/api/testcases', headers=headers, json=testcase(
         status='Pass',
         test_type='automated',
-        test_purpose='regression',
         automation_framework='selenium',
     ))
 
     assert response.status_code == 201
-    _sql, params = database.connection.cursor_instance.calls[-1]
-    assert params[6:10] == ('Pending', 'automated', 'playwright', 'regression')
+    sql, params = database.connection.cursor_instance.calls[-1]
+    # A client can neither overwrite the result status nor claim a framework:
+    # the platform's only runner is Playwright, so there is nothing to store,
+    # and a new test case always starts Pending.
+    assert 'automation_framework' not in sql
+    assert 'status = %s' not in sql
+    assert params[6:8] == ('Pending', 'automated')
+    assert params[8] is True  # crawl_pages is derived for automated runs
 
 
-def test_a_purpose_must_match_how_the_test_will_run(client):
+def test_crawl_pages_is_derived_from_test_type_not_the_client(client):
+    """An automated test always crawls; a manual one is walked by a person.
+    The client's crawl_pages claim is ignored so a request cannot create an
+    automated test that silently audits a single page."""
+
     http, database, headers = client
 
     response = http.post('/api/testcases', headers=headers, json=testcase(
+        test_type='automated',
+        crawl_pages=False,
+    ))
+    assert response.status_code == 201
+    _sql, params = database.connection.cursor_instance.calls[-1]
+    assert params[8] is True
+
+    response = http.post('/api/testcases', headers=headers, json=testcase(
         test_type='manual',
-        test_purpose='regression',
+        crawl_pages=True,
+    ))
+    assert response.status_code == 201
+    _sql, params = database.connection.cursor_instance.calls[-1]
+    assert params[8] is False
+
+
+def test_automated_audit_does_not_require_workflow_steps(client):
+    http, database, headers = client
+
+    response = http.post('/api/testcases', headers=headers, json=testcase(
+        test_type='automated',
+        steps='',
+    ))
+
+    assert response.status_code == 201
+    _sql, params = database.connection.cursor_instance.calls[-1]
+    assert params[3] == ''
+    assert params[7] == 'automated'
+
+
+def test_an_unknown_test_type_is_rejected_before_anything_is_written(client):
+    http, database, headers = client
+
+    response = http.post('/api/testcases', headers=headers, json=testcase(
+        test_type='semi-automated',
     ))
 
     assert response.status_code == 400
-    assert response.get_json()['error'] == 'Invalid purpose for a manual test'
+    assert response.get_json()['error'] == 'Test type must be manual or automated'
     assert database.connection.cursor_instance.calls == []
 
 

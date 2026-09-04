@@ -200,6 +200,7 @@ class _ManualSession:
                 'expected_met': self.expected_met,
                 'reported': list(self.reported),
                 'reported_count': len(self.reported),
+                'auto_findings': list(self.auto_findings),
                 'auto_findings_count': len(self.auto_findings),
                 'auto_checked_pages': self.auto_checked_pages,
                 'issue_categories': ISSUE_CATEGORIES,
