@@ -17,6 +17,16 @@ suggests. Leading numbering ("1.", "2)") is ignored.
     Expect text Welcome back
     Expect url contains /dashboard
 
+Dropdowns, checkboxes and negative assertions are covered too:
+
+    Select Extra Large in Size
+    Set Country to India
+    Tick the Terms checkbox
+    Uncheck Newsletter
+    Clear the Search box
+    Expect no "Item removed"          (quoting keeps multi-word values intact)
+    Expect url to be /dashboard
+
 Anything not understood is reported as an unreadable step rather than being
 silently skipped, so a typo can never masquerade as a passing test.
 """
@@ -24,6 +34,8 @@ silently skipped, so a typo can never masquerade as a passing test.
 import logging
 import os
 import re
+import time
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +47,11 @@ logger = logging.getLogger(__name__)
 # attribute directly; deployments set QA_STEP_TIMEOUT_MS.
 STEP_TIMEOUT_MS = int(os.getenv('QA_STEP_TIMEOUT_MS', '8000'))
 
+# Ceiling for an explicit "Wait N seconds" step. Testers ask for pauses to
+# cover animations or debounces; a longer sleep would hide a slow page that
+# the report ought to be complaining about.
+MAX_WAIT_SECONDS = 10
+
 # Keys that "Press X" understands. Anything else is passed through to
 # Playwright, which accepts things like "Control+A".
 KNOWN_KEYS = {
@@ -44,12 +61,32 @@ KNOWN_KEYS = {
 }
 
 # Each entry is (action, regex). First match wins, so put the more specific
-# patterns first: "expect url contains x" must beat the generic "expect x".
+# patterns first: "expect url contains x" must beat the generic "expect x",
+# and "select X in Y" (a dropdown) must beat the click reading of "select X".
 _PATTERNS = [
     ('expect_url', re.compile(
         r'^(?:expect|verify|check|assert)\s+(?:the\s+)?url\s+(?:to\s+)?contains?\s+(?P<value>.+)$', re.I)),
     ('expect_url', re.compile(
         r'^(?:the\s+)?url\s+should\s+contain\s+(?P<value>.+)$', re.I)),
+    # Exact URL assertion. Distinct wording from "contains", so both can live
+    # here; "to be" is matched whole to avoid eating a value like "before X".
+    ('expect_url_exact', re.compile(
+        r'^(?:expect|verify|check|assert)?\s*(?:the\s+)?url\s+(?:to\s+)?be\s+(?P<value>.+)$', re.I)),
+    ('expect_url_exact', re.compile(
+        r'^(?:the\s+)?url\s+should\s+be\s+(?P<value>.+)$', re.I)),
+    # Absence assertions. These must sit before the presence patterns below,
+    # or "Expect no text Welcome" would be read as expecting the text
+    # "no text Welcome" and fail every run.
+    ('expect_no_text', re.compile(
+        r'^expect\s+not\s+to\s+see\s+(?P<value>.+)$', re.I)),
+    ('expect_no_text', re.compile(
+        r'^(?:i\s+)?should\s+not\s+see\s+(?P<value>.+)$', re.I)),
+    ('expect_no_text', re.compile(
+        r'^expect\s+(?:the\s+)?text\s+(?P<value>.+?)\s+to\s+be\s+gone$', re.I)),
+    ('expect_no_text', re.compile(
+        r'^expect\s+(?P<value>.+?)\s+to\s+be\s+gone$', re.I)),
+    ('expect_no_text', re.compile(
+        r'^expect\s+no\s+(?P<value>.+)$', re.I)),
     ('expect_text', re.compile(
         r'^(?:expect|verify|check|assert)\s+(?:to\s+)?(?:see\s+)?(?:the\s+)?text\s+(?P<value>.+)$', re.I)),
     ('expect_text', re.compile(
@@ -62,6 +99,26 @@ _PATTERNS = [
     # value states the intent plainly, so that form is still accepted.
     ('expect_text', re.compile(
         r'^(?:expect|verify|check|assert|see)\s+(?P<value>"[^"]+"|\'[^\']+\')$', re.I)),
+    # Dropdown selection. "Select X" alone stays a click (nav menus use that
+    # word); choosing an OPTION is always written with the field named too.
+    ('select_option', re.compile(
+        r'^(?:select|choose)\s+(?P<value>.+?)\s+(?:in|from|on)\s+(?:the\s+)?(?P<target>.+)$', re.I)),
+    ('select_option', re.compile(
+        r'^set\s+(?:the\s+)?(?P<target>.+?)\s+(?:to|as)\s+(?P<value>.+)$', re.I)),
+    # Checkboxes and radios. "Uncheck" is unambiguous; "check" only counts as
+    # a control action when a control word names it, because a bare "check X"
+    # is prose far more often than it is an instruction to tick a box.
+    ('uncheck', re.compile(
+        r'^(?:uncheck|untick|deselect)\s+(?:the\s+)?(?P<target>.+?)(?:\s+(?:checkbox|check\s?box|box(es)?|tick\s?box|toggle))?$', re.I)),
+    ('check', re.compile(
+        r'^tick\s+(?:the\s+)?(?P<target>.+?)(?:\s+(?:checkbox|check\s?box|box(es)?|tick\s?box|toggle))?$', re.I)),
+    ('check', re.compile(
+        r'^check\s+(?:the\s+)?(?P<target>.+?)\s+(?:checkbox|check\s?box|box(es)?|tick\s?box|toggle)$', re.I)),
+    # Clearing a field needs the control word present: a bare "Clear X" is
+    # just as often a button labelled Clear (filters, cart) as an instruction
+    # to empty an input, and guessing wrong clicks nothing at all.
+    ('clear', re.compile(
+        r'^clear\s+(?:the\s+)?(?P<target>.+?)\s+(?:field|box|input)$', re.I)),
     ('goto', re.compile(
         r'^(?:open|go\s+to|visit|navigate\s+to|browse\s+to)\s+(?P<target>.+)$', re.I)),
     ('type', re.compile(
@@ -69,6 +126,11 @@ _PATTERNS = [
         r'(?:\s+(?:field|box|input))?$', re.I)),
     ('type', re.compile(
         r'^fill\s+(?:the\s+)?(?P<target>.+?)\s+with\s+(?P<value>.+)$', re.I)),
+    # Testers do sometimes genuinely need a pause (an animation, a debounce).
+    # It is honoured but capped: a long sleep hides a slow page that the
+    # report should be complaining about.
+    ('wait_seconds', re.compile(
+        r'^(?:wait|sleep)(?:\s+for)?\s+(?P<value>\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)?$', re.I)),
     ('press', re.compile(
         r'^press\s+(?:the\s+)?(?P<value>[\w+]+)(?:\s+key)?$', re.I)),
     ('wait', re.compile(
@@ -206,7 +268,8 @@ def execute_step(page, step, base_url=None):
             'status': 'unreadable',
             'message': 'Could not understand this step',
             'detail': 'Try wording like "Click Sign in", "Type alice@x.com into Email", '
-                      '"Expect text Welcome" or "Open https://example.com".',
+                      '"Select Large in Size", "Tick the Terms checkbox", '
+                      '"Expect text Welcome", "Expect no Error" or "Open https://example.com".',
         }
 
     try:
@@ -243,6 +306,100 @@ def execute_step(page, step, base_url=None):
                 'message': f'Expected the URL to contain "{value}"',
                 'detail': f'It was actually {current}',
             }
+
+        if action == 'expect_url_exact':
+            current = page.url or ''
+            wanted = value.strip().rstrip('/')
+            if wanted.startswith(('http://', 'https://')):
+                matched = current.rstrip('/') == wanted
+            else:
+                # A path is matched against the path of the current URL, so
+                # "Expect url to be /dashboard" passes on any origin.
+                matched = urlparse(current).path.rstrip('/') == wanted
+            if matched:
+                return {'status': 'passed', 'message': f'URL is {wanted}', 'detail': ''}
+            return {
+                'status': 'failed',
+                'message': f'Expected the URL to be exactly "{wanted}"',
+                'detail': f'It was actually {current}',
+            }
+
+        if action == 'expect_no_text':
+            # Poll rather than check once: the text may still be animating or
+            # re-rendering out. The step passes the moment it is gone, and
+            # fails only after the usual timeout.
+            deadline = time.time() + STEP_TIMEOUT_MS / 1000.0
+            while True:
+                try:
+                    if page.get_by_text(value, exact=False).count() == 0:
+                        return {'status': 'passed',
+                                'message': f'No "{value}" on the page', 'detail': ''}
+                except Exception as e:
+                    reason = str(e).split('\n')[0][:300]
+                    return {
+                        'status': 'failed',
+                        'message': f'Step failed: {step["raw"]}',
+                        'detail': reason,
+                    }
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.2)
+            return {
+                'status': 'failed',
+                'message': f'Expected "{value}" to be gone but it is still on the page',
+                'detail': f'Current URL: {page.url}',
+            }
+
+        if action == 'select_option':
+            locator, how = _resolve(page, target, for_input=True)
+            if locator is None:
+                return {
+                    'status': 'failed',
+                    'message': f'Could not find "{target}" on the page',
+                    'detail': f'{how}. Current URL: {page.url}',
+                }
+            try:
+                locator.select_option(value, timeout=STEP_TIMEOUT_MS)
+            except Exception:
+                # Options are usually written the way users see them, which is
+                # the label rather than the value attribute. If matching by
+                # value failed, try the visible label before giving up.
+                locator.select_option(label=value, timeout=STEP_TIMEOUT_MS)
+            return {'status': 'passed', 'message': f'Selected "{value}" in "{target}"',
+                    'detail': f'found by {how}'}
+
+        if action in ('check', 'uncheck'):
+            locator, how = _resolve(page, target, for_input=True)
+            if locator is None:
+                return {
+                    'status': 'failed',
+                    'message': f'Could not find "{target}" on the page',
+                    'detail': f'{how}. Current URL: {page.url}',
+                }
+            if action == 'check':
+                locator.check(timeout=STEP_TIMEOUT_MS)
+                return {'status': 'passed', 'message': f'Ticked "{target}"',
+                        'detail': f'found by {how}'}
+            locator.uncheck(timeout=STEP_TIMEOUT_MS)
+            return {'status': 'passed', 'message': f'Unticked "{target}"',
+                    'detail': f'found by {how}'}
+
+        if action == 'clear':
+            locator, how = _resolve(page, target, for_input=True)
+            if locator is None:
+                return {
+                    'status': 'failed',
+                    'message': f'Could not find "{target}" on the page',
+                    'detail': f'{how}. Current URL: {page.url}',
+                }
+            locator.fill('', timeout=STEP_TIMEOUT_MS)
+            return {'status': 'passed', 'message': f'Cleared "{target}"',
+                    'detail': f'found by {how}'}
+
+        if action == 'wait_seconds':
+            seconds = min(float(value), MAX_WAIT_SECONDS)
+            time.sleep(seconds)
+            return {'status': 'passed', 'message': f'Waited {seconds:g}s', 'detail': ''}
 
         if action == 'wait':
             if _looks_like_selector(target):

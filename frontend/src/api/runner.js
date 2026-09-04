@@ -8,13 +8,6 @@ const getAuthHeader = () => ({
   },
 });
 
-// Trigger a test run for an automated test case (synchronous, blocks until done)
-export const runTestCase = (testCaseId) =>
-  axios.post(`${API_URL}/run/${testCaseId}`, {}, {
-    ...getAuthHeader(),
-    timeout: 900000,  // 15 minutes for multi-page tests
-  });
-
 // Queue a test run on a background worker; returns { job_id } immediately.
 export const runTestCaseAsync = (testCaseId) =>
   axios.post(`${API_URL}/run/${testCaseId}/async`, {}, getAuthHeader());

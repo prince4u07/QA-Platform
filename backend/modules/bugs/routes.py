@@ -373,6 +373,15 @@ def _smart_title_for_finding(category, finding):
     if category == 'mobile_issues':
         return f"📱 {finding.get('issue', 'Mobile issue')}"
 
+    if category == 'api_issues':
+        return f"🔌 API request failed: {finding.get('issue') or finding.get('url', 'request')}"
+
+    if category == 'validation_issues':
+        return f"📝 Form validation failed: {finding.get('issue', 'invalid form behavior')}"
+
+    if category == 'execution_errors':
+        return f"⚠️ Page audit incomplete: {finding.get('error') or finding.get('issue', 'audit error')}"
+
     # Default
     return f"🐞 {finding.get('issue') or finding.get('display') or 'Issue detected'}"
 
@@ -479,6 +488,16 @@ def _smart_description_for_finding(category, finding):
 
 def _category_severity_map(category, finding=None):
     """Map test categories to bug severity, more nuanced."""
+    # A finding that arrived with its own severity keeps it. The runner
+    # grades every finding critical/serious/moderate/minor, and a workflow
+    # failure graded critical must not become a Minor bug just because its
+    # category has no mapping here.
+    if isinstance(finding, dict):
+        own = finding.get('severity')
+        if own in ('critical', 'serious'):
+            return 'Critical' if own == 'critical' else 'Major'
+        if own in ('moderate', 'minor'):
+            return 'Minor'
     if category == 'security_issues':
         return 'Critical'
     if category == 'console_errors':
@@ -492,6 +511,8 @@ def _category_severity_map(category, finding=None):
         if isinstance(finding, dict) and finding.get('count', 0) > 10:
             return 'Major'
         return 'Minor'
+    if category in ('api_issues', 'validation_issues', 'execution_errors'):
+        return 'Major'
     return 'Minor'
 
 
@@ -504,6 +525,9 @@ def _category_db_value(category):
         'security_issues': 'security',
         'accessibility_issues': 'accessibility',
         'mobile_issues': 'mobile',
+        'api_issues': 'other',
+        'validation_issues': 'other',
+        'execution_errors': 'other',
     }.get(category, 'other')
 
 
@@ -547,6 +571,62 @@ def _build_bug_from_finding(category, finding):
 # ============================================================
 # AUTO-CREATE BUGS FROM TEST RUN
 # ============================================================
+
+# Categories whose values are runner findings. Everything else inside
+# findings_evidence is bookkeeping and must never be read as a defect: a
+# manual run stores its note as a STRING there, and iterating a string
+# would "create" one bug per character.
+RUN_FINDING_CATEGORIES = {
+    'broken_links', 'console_errors', 'missing_alt_images', 'seo_issues',
+    'security_issues', 'accessibility_issues', 'mobile_issues',
+    'performance_issues', 'functional_issues', 'api_issues',
+    'validation_issues', 'execution_errors',
+}
+
+# Manual runs keep their record under these keys: metadata, the pages
+# visited, the whole checklist (passed steps included) and the run summary.
+# None of that is a defect.
+MANUAL_BOOKKEEPING_KEYS = {
+    'manual', 'note', 'pages', 'steps', 'summary',
+    'expected_result', 'expected_met',
+}
+
+# Manual runs keep the tester's own findings under 'reported', already
+# carrying the category and severity the tester chose.
+TESTER_SEVERITY_TO_BUG = {
+    'critical': 'Critical', 'serious': 'Major',
+    'moderate': 'Major', 'minor': 'Minor',
+}
+
+TESTER_CATEGORY_TO_DB = {
+    'broken-link': 'broken-link',
+    'functional': 'other',
+    'layout': 'other',
+    'design': 'other',
+    'content': 'other',
+    'business': 'other',
+    'other': 'other',
+}
+
+
+def _insert_finding_bug(cursor, title, description, severity, cat_db,
+                        tc_id, run_id, finding, assigned_to=None):
+    """Insert one bug built from a finding-shaped dict."""
+    evidence = finding if isinstance(finding, dict) else None
+    cursor.execute(
+        """INSERT INTO bugs (
+            title, description, severity, status, category,
+            test_case_id, test_run_id,
+            steps_to_reproduce, expected_behavior, actual_behavior,
+            evidence, assigned_to, created_at
+        ) VALUES (%s, %s, %s, 'Open', %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+        (title, description, severity, cat_db,
+         tc_id, run_id,
+         '', '',
+         finding.get('issue', '') if isinstance(finding, dict) else str(finding),
+         json.dumps(evidence) if evidence else None, assigned_to)
+    )
+
 
 @bugs_bp.route('/from-test-run/<int:run_id>', methods=['POST'])
 @jwt_required()
@@ -596,7 +676,49 @@ def create_bugs_from_run(run_id):
         skipped = 0
 
         for category, items in rich_findings.items():
-            if not items:
+            # Bookkeeping keys of a manual-run record: metadata, pages,
+            # checklist and summary are not defects.
+            if category in MANUAL_BOOKKEEPING_KEYS:
+                continue
+            if not isinstance(items, list):
+                continue
+
+            if category == 'reported':
+                # A manual tester's own findings, carrying the category and
+                # severity they chose while looking at the page.
+                for finding in items:
+                    if not isinstance(finding, dict):
+                        continue
+                    title = (finding.get('issue')
+                             or finding.get('display') or '').strip()
+                    if len(title) < 3:
+                        continue
+                    if title in existing_titles:
+                        skipped += 1
+                        continue
+                    existing_titles.add(title)
+
+                    severity = TESTER_SEVERITY_TO_BUG.get(
+                        finding.get('severity'), 'Major')
+                    cat_db = TESTER_CATEGORY_TO_DB.get(
+                        finding.get('category'), 'other')
+                    note = finding.get('note') or ''
+                    page_url = finding.get('page_url') or ''
+                    description = (
+                        "Reported by a manual tester during a tracked run.\n\n"
+                        f"**What was observed:** {title}\n"
+                        + (f"\n**Tester's note:** {note}" if note else '')
+                        + (f"\n\n**Where:** {page_url}" if page_url else '')
+                    )
+                    _insert_finding_bug(cursor, title, description, severity,
+                                        cat_db, run['tc_id'], run_id, finding,
+                                        assigned_to=user_id)
+                    created += 1
+                continue
+
+            if category not in RUN_FINDING_CATEGORIES:
+                # Neither a known finding category nor manual bookkeeping.
+                # Skip rather than guess what it is.
                 continue
 
             for finding in items:

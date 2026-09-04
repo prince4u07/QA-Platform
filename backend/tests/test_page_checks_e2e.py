@@ -104,7 +104,8 @@ def test_single_page_returns_every_category_and_coverage(browser_page, site):
 
     expected = {'broken_links', 'console_errors', 'missing_alt_images', 'seo_issues',
                 'security_issues', 'accessibility_issues', 'mobile_issues',
-                'performance_issues', 'functional_issues'}
+                'performance_issues', 'functional_issues', 'api_issues',
+                'validation_issues'}
     assert set(findings) == expected
     # A page audit cannot judge whether the feature works; the runner fills
     # this in from the test case's executed steps.
