@@ -39,6 +39,7 @@ const summary = {
 function apiReturns(overrides = {}) {
   const data = { summary, ...overrides };
   reportsApi.getSummary.mockResolvedValue({ data: data.summary });
+  reportsApi.getDetectedIssues.mockResolvedValue({ data: data.detected ?? [] });
   reportsApi.getHealthTrend.mockResolvedValue({ data: data.trend ?? [] });
   reportsApi.getBugBreakdown.mockResolvedValue({
     data: data.breakdown ?? { by_status: [], by_severity: [] },
@@ -66,6 +67,23 @@ describe('Reports dashboard', () => {
     renderReports();
     expect(await screen.findByText('Reports & Analytics')).toBeInTheDocument();
     expect(await screen.findByText('40')).toBeInTheDocument();   // total runs
+  });
+
+  it('shows findings saved by the latest test runs', async () => {
+    apiReturns({
+      detected: [{
+        id: 'run-1-seo-0',
+        issue: 'Page has no meta description',
+        severity: 'Moderate',
+        project_name: 'Storefront',
+        test_case_title: 'Homepage audit',
+        location: 'https://example.test/',
+      }],
+    });
+    renderReports();
+
+    expect(await screen.findByText('Page has no meta description')).toBeInTheDocument();
+    expect(screen.getByText(/Latest run per test case/i)).toBeInTheDocument();
   });
 
   it('keeps the dashboard on screen while refreshing', async () => {

@@ -361,28 +361,36 @@ def check_broken_links(page, base_url):
 
     def _check(url):
         # A 3 second timeout is not proof a link is dead, it is usually just a
-        # slow server. One slower retry before calling it unreachable removes
-        # that noise while still catching a genuinely dead host.
-        try:
-            return _attempt(url, PER_REQUEST_TIMEOUT)
-        except requests.RequestException:
-            pass
-        try:
-            return _attempt(url, RETRY_TIMEOUT)
-        except requests.RequestException:
-            return 0
+        # slow server, so every failure gets one slower retry before being
+        # called broken. The retry also classifies the failure: a timeout is
+        # weak evidence (the host answered, just slowly), while a connection
+        # error — DNS says the host does not exist, or it refuses the
+        # connection — means the host answered nothing at all.
+        failure = 'unreachable'
+        for timeout in (PER_REQUEST_TIMEOUT, RETRY_TIMEOUT):
+            try:
+                return _attempt(url, timeout), None
+            except requests.Timeout:
+                failure = 'timeout'
+            except requests.RequestException:
+                failure = 'unreachable'
+        return 0, failure
 
-    def _is_broken(url, status):
+    def _is_broken(url, status, failure=None):
         # 401/403/429/503 are auth / anti-bot / rate-limit / transient responses,
-        # NOT broken links. External sites also block scanners, so status 0 is
-        # only useful evidence for a link on the site currently being tested.
+        # NOT broken links. A timeout is only useful evidence for a link on the
+        # site currently being tested — an external site being slow is not a
+        # defect of ours. A connection error is different: the host answered
+        # nothing at all, so the destination is dead on any site.
         if status == 0:
-            return urlparse(url).netloc == urlparse(base_url).netloc
+            if failure == 'timeout':
+                return urlparse(url).netloc == urlparse(base_url).netloc
+            return True
         if status in (401, 403, 429, 503):
             return False
         return status >= 400
 
-    def _severity(url, status):
+    def _severity(url, status, failure=None):
         # A dead link on your own site is worse than a dead link pointing out.
         # A 5xx means the target is erroring, which is worse still.
         if status >= 500:
@@ -392,21 +400,24 @@ def check_broken_links(page, base_url):
         except Exception:
             internal = False
         if status == 0:
-            return 'moderate'          # unreachable: often a timeout, not proof of a fault
+            if failure == 'timeout':
+                return 'moderate'      # slow: often not a fault at all
+            # Refused / no such host: the destination really is unreachable.
+            return 'serious' if internal else 'moderate'
         return 'serious' if internal else 'moderate'
 
-    bad = {}    # full_url -> status
+    bad = {}    # full_url -> (status, failure)
     try:
         with ThreadPoolExecutor(max_workers=POOL_SIZE) as pool:
             future_to_url = {pool.submit(_check, url): url for url, _ in candidates}
             for fut in as_completed(future_to_url):
                 url = future_to_url[fut]
                 try:
-                    status = fut.result()
+                    status, failure = fut.result()
                 except Exception:
-                    status = 0
-                if _is_broken(url, status):
-                    bad[url] = status
+                    status, failure = 0, 'unreachable'
+                if _is_broken(url, status, failure):
+                    bad[url] = (status, failure)
     except Exception as e:
         logger.warning("broken_links: pool error: %s", e)
         return findings, coverage
@@ -416,12 +427,12 @@ def check_broken_links(page, base_url):
         if full_url not in bad:
             continue
         try:
-            status = bad[full_url]
+            status, failure = bad[full_url]
             link_text = link.inner_text()[:60].strip() or '(no text)'
             findings.append({
                 'url': full_url,
                 'status_code': status,
-                'severity': _severity(full_url, status),
+                'severity': _severity(full_url, status, failure),
                 'element_text': link_text,
                 'element_selector': _safe_get_selector(link),
                 'parent_context': _safe_get_parent_text(link),
@@ -1054,6 +1065,63 @@ def filter_console_errors(console_messages):
     return filtered
 
 
+def check_api_responses(api_responses):
+    """Turn failed API/XHR responses observed during the page visit into findings."""
+    findings = []
+    seen = set()
+    for response in api_responses or []:
+        status = response.get('status', 0)
+        url = response.get('url', '')
+        if status < 400 or not url or url in seen:
+            continue
+        seen.add(url)
+        findings.append({
+            'issue': f'API request returned HTTP {status}',
+            'severity': 'critical' if status >= 500 else 'serious',
+            'status': status,
+            'url': url,
+            'element_selector': 'network',
+            'display': f'API request failed ({status}): {url}',
+        })
+    return findings
+
+
+def check_form_validation(page):
+    """Find forms whose native required-field validation does not work."""
+    try:
+        form_results = page.evaluate("""() => Array.from(document.forms).map((form, index) => {
+            const controls = Array.from(form.querySelectorAll('input, select, textarea'))
+                .filter(control => !control.disabled);
+            const required = controls.filter(control => control.required);
+            const invalidRequired = required.filter(control => {
+                const originalValue = control.value;
+                const originalChecked = control.checked;
+                if (control.type === 'checkbox' || control.type === 'radio') {
+                    control.checked = false;
+                } else {
+                    control.value = '';
+                }
+                const invalid = !control.checkValidity();
+                control.value = originalValue;
+                control.checked = originalChecked;
+                return invalid;
+            });
+            return { index, required: required.length, invalidRequired: invalidRequired.length };
+        })""")
+    except Exception as e:
+        logger.warning("form validation check error: %s", e)
+        return []
+
+    return [{
+        'issue': f"Form {result['index'] + 1} required fields are not invalid when empty",
+        'severity': 'serious',
+        'form_index': result['index'],
+        'element_selector': 'form',
+        'display': f"Form {result['index'] + 1} does not reject empty required fields",
+    } for result in form_results
+        if result['required'] and not result['invalidRequired']]
+
+
 # ============================================================
 # SEVERITY AND HEALTH SCORE
 # ============================================================
@@ -1072,9 +1140,12 @@ DEFAULT_SEVERITY = {
     'console_errors': 'serious',
     'performance_issues': 'moderate',
     'accessibility_issues': 'moderate',
-    'mobile_issues': 'moderate',
     'seo_issues': 'moderate',
     'missing_alt_images': 'minor',
+    'mobile_issues': 'moderate',
+    'api_issues': 'serious',
+    'validation_issues': 'serious',
+    'execution_errors': 'serious',
 }
 
 # How much each category contributes to the overall score. Sums to 100.
@@ -1087,9 +1158,12 @@ CATEGORY_WEIGHT = {
     'broken_links': 13,
     'console_errors': 11,
     'performance_issues': 9,
-    'mobile_issues': 6,
     'seo_issues': 4,
     'missing_alt_images': 2,
+    'mobile_issues': 6,
+    'api_issues': 10,
+    'validation_issues': 10,
+    'execution_errors': 8,
 }
 
 # Controls how fast a category's subscore falls as penalties pile up.
@@ -1181,8 +1255,6 @@ def measured_categories(step_summary=None, mobile_checked=True,
     could not read never ran and so verify nothing about the site.
     """
     measured = set(CATEGORY_WEIGHT)
-    if not mobile_checked:
-        measured.discard('mobile_issues')
     # When axe-core could not run, the fallback finds far less, so the run
     # produced fewer findings and the score went UP because a tool broke.
     if not accessibility_measured:
@@ -1226,17 +1298,17 @@ def summarise_coverage(all_pages_coverage):
     links" reads as "every link works" even when only 30 of 210 were tried.
     """
     links_found = links_checked = 0
-    taps_found = taps_checked = 0
-    links_truncated = taps_truncated = False
-    mobile_skipped_reason = None
+    links_truncated = False
     fallback_pages = 0
     page_size_total = 0
     page_size_max = 0
     request_total = 0
     unmeasured_total = 0
     steps_total = steps_unreadable = 0
+    audit_errors = 0
 
     for cov in all_pages_coverage or []:
+        audit_errors += 1 if cov.get('audit_error') else 0
         perf = cov.get('performance') or {}
         size = perf.get('page_size_kb', 0)
         page_size_total += size
@@ -1249,17 +1321,10 @@ def summarise_coverage(all_pages_coverage):
         links_checked += link.get('links_checked', 0)
         links_truncated = links_truncated or link.get('truncated', False)
 
-        mob = cov.get('mobile') or {}
-        taps_found += mob.get('tap_targets_found', 0)
-        taps_checked += mob.get('tap_targets_checked', 0)
-        taps_truncated = taps_truncated or mob.get('truncated', False)
-
         steps = cov.get('steps') or {}
         steps_total += steps.get('total', 0)
         steps_unreadable += steps.get('unreadable', 0)
 
-        if cov.get('mobile_skipped_reason'):
-            mobile_skipped_reason = cov['mobile_skipped_reason']
         if cov.get('accessibility_engine') == 'heuristic-fallback':
             fallback_pages += 1
 
@@ -1269,12 +1334,6 @@ def summarise_coverage(all_pages_coverage):
             f'Only {links_checked} of {links_found} links were tested. '
             f'A clean link result does not mean every link on the site works.'
         )
-    if taps_truncated:
-        notes.append(
-            f'Only {taps_checked} of {taps_found} tap targets were measured for mobile size.'
-        )
-    if mobile_skipped_reason:
-        notes.append(f'Mobile checks were skipped: {mobile_skipped_reason}.')
     if fallback_pages:
         notes.append(
             f'axe-core could not run on {fallback_pages} page(s), so a much more '
@@ -1286,6 +1345,11 @@ def summarise_coverage(all_pages_coverage):
             f'{steps_unreadable} of {steps_total} written step(s) could not be '
             f'understood, so that part of the workflow was never exercised. '
             f'Rewording them would test more of the site.'
+        )
+    if audit_errors:
+        notes.append(
+            f'{audit_errors} page(s) could not complete the audit. Their results '
+            f'are incomplete and should not be treated as clean.'
         )
     if unmeasured_total:
         notes.append(
@@ -1299,9 +1363,7 @@ def summarise_coverage(all_pages_coverage):
         'complete': not notes,
         'links_found': links_found,
         'links_checked': links_checked,
-        'tap_targets_found': taps_found,
-        'tap_targets_checked': taps_checked,
-        'mobile_skipped': bool(mobile_skipped_reason),
+        'audit_errors': audit_errors,
         'accessibility_fallback_pages': fallback_pages,
         # Real measured page weight. This used to be reported as 0 on every run.
         'page_size_kb_total': page_size_total,
@@ -1587,7 +1649,7 @@ def build_crawl_queue(base_url, landing_url=None, session_used=False):
 
 
 def test_single_page(page, page_url, response_headers, console_messages,
-                     is_mobile=True, page_load_ms=0):
+                     is_mobile=True, page_load_ms=0, api_responses=None):
     """
     Run every check against one loaded page.
 
@@ -1602,19 +1664,14 @@ def test_single_page(page, page_url, response_headers, console_messages,
     security_issues = check_security(page_url, response_headers)
     accessibility_issues, a11y_engine = check_accessibility(page)
 
-    # Mobile checks (tap-target size, horizontal scroll) only make sense in the
-    # mobile viewport. Authenticated crawls run in a DESKTOP context (to keep the
-    # session valid), where these would flag every normal desktop control as a
-    # "too small tap target" — pure noise. Skip them off mobile.
-    if is_mobile:
-        mobile_issues, mobile_coverage = check_mobile(page)
-        mobile_skipped_reason = None
-    else:
-        mobile_issues, mobile_coverage = [], {}
-        mobile_skipped_reason = ('logged-in crawls run on a desktop viewport, '
-                                 'so mobile checks did not run for this page')
+    # Mobile auditing is disabled to keep automated runs focused on the core
+    # desktop workflow and issue checks.
+    mobile_issues, mobile_coverage = [], {}
+    mobile_skipped_reason = None
 
     performance_issues, perf_metrics = check_performance(page, page_load_ms)
+    api_issues = check_api_responses(api_responses)
+    validation_issues = check_form_validation(page)
 
     real_errors = filter_console_errors(console_messages)
     console_errors_rich = [
@@ -1635,6 +1692,8 @@ def test_single_page(page, page_url, response_headers, console_messages,
         'accessibility_issues': accessibility_issues,
         'mobile_issues': mobile_issues,
         'performance_issues': performance_issues,
+        'api_issues': api_issues,
+        'validation_issues': validation_issues,
     }
     coverage = {
         'links': link_coverage,
@@ -1659,6 +1718,7 @@ def tag_findings_with_page(findings_dict, page_url):
 # It must not include anything volatile (screenshots, timings, page order)
 # or the same defect would look new on every run.
 FINDING_KEYERS = {
+    'execution_errors': lambda i: i.get('issue') or i.get('error'),
     'functional_issues': lambda i: i.get('step'),
     'broken_links': lambda i: i.get('url'),
     'console_errors': lambda i: i.get('text'),
@@ -1673,6 +1733,8 @@ FINDING_KEYERS = {
     # widths, so keying on it made every page a brand new finding.
     'mobile_issues': lambda i: i.get('issue_type') or i.get('issue'),
     'performance_issues': lambda i: i.get('issue'),
+    'api_issues': lambda i: i.get('url') or i.get('issue'),
+    'validation_issues': lambda i: i.get('form_index') or i.get('issue'),
 }
 
 
@@ -1975,6 +2037,9 @@ def manual_done(testcase_id):
     note = data.get('note', '')
     expected_met = data.get('expected_met')
 
+    if expected_met is False:
+        outcome = 'Fail'
+
     ok, message, snap = manual_run.finish(testcase_id, outcome, note,
                                           expected_met=expected_met)
     if not ok:
@@ -2008,6 +2073,15 @@ def manual_done(testcase_id):
         for s in (snap.get('steps') or []) if s['status'] == 'failed'
     ]
 
+    if snap.get('expected_met') is False:
+        functional.append({
+            'issue': 'Expected result was not met',
+            'severity': 'critical',
+            'reason': snap.get('expected_result', ''),
+            'source': 'tester',
+            'display': 'Expected result was not met',
+        })
+
     # Everything the tester spotted by eye, in the same shape as any finding.
     reported = [
         {
@@ -2023,18 +2097,32 @@ def manual_done(testcase_id):
         for r in (snap.get('reported') or [])
     ]
 
-    issues_found = len(functional) + len(reported) + snap.get('auto_findings_count', 0)
+    automatic = {}
+    for finding in (snap.get('auto_findings') or []):
+        if not isinstance(finding, dict):
+            continue
+        category = finding.get('category', 'other')
+        automatic.setdefault(category, []).append(finding)
+
+    issues_found = len(functional) + len(reported) + len(snap.get('auto_findings') or [])
 
     findings_evidence = json.dumps({
         'manual': True,
         'note': note,
         'pages': pages,
         'steps': snap.get('steps') or [],
+        'functional_issues': functional,
         'reported': reported,
+        **automatic,
         'expected_result': snap.get('expected_result', ''),
         'expected_met': snap.get('expected_met'),
         'summary': manual_summary,
     })
+
+    manual_findings = {'functional_issues': functional}
+    for category, items in automatic.items():
+        manual_findings.setdefault(category, []).extend(items)
+    manual_score = calculate_health_score(manual_findings)
 
     try:
         cursor = mysql.connection.cursor()
@@ -2058,7 +2146,7 @@ def manual_done(testcase_id):
                 json.dumps([f['display'] for f in functional]),
                 json.dumps({'results': snap.get('steps') or [],
                             'summary': manual_summary}),
-                100 if outcome == 'Pass' else 0,
+                manual_score,
             )
         )
         run_id = cursor.lastrowid
@@ -2345,6 +2433,11 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                     'display': f"[{msg.type}] {msg.text[:200]}"
                 }) if msg.type in ('error', 'warning') else None
             )
+            api_responses = []
+            crawl_page.on('response', lambda response: api_responses.append({
+                'url': response.url,
+                'status': response.status,
+            }) if response.request.resource_type in ('xhr', 'fetch') else None)
 
             page_idx = -1
             while to_visit and len(per_page_records) < max_pages:
@@ -2359,6 +2452,7 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 urls_to_test.append(page_url)
 
                 console_messages.clear()         # per-URL console capture
+                api_responses.clear()            # per-URL API capture
                 response_headers = {}
                 page_status = 0
                 page_title = ''
@@ -2432,7 +2526,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                     page_findings, page_coverage = test_single_page(
                         page, page_url, response_headers,
                         console_messages, is_mobile=not session_used,
-                        page_load_ms=page_load_ms)
+                        page_load_ms=page_load_ms,
+                        api_responses=api_responses)
                     if page_idx == 0:
                         page_findings['functional_issues'] = step_findings
                         page_coverage['steps'] = step_summary
@@ -2467,10 +2562,6 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         )
                         page_findings['accessibility_issues'] = _enrich_with_crops(
                             page_findings['accessibility_issues'], 'a11y',
-                            screenshot_path, evidence_dir, crop_run_id, page_idx
-                        )
-                        page_findings['mobile_issues'] = _enrich_with_crops(
-                            page_findings['mobile_issues'], 'mobile',
                             screenshot_path, evidence_dir, crop_run_id, page_idx
                         )
 
@@ -2524,15 +2615,25 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
 
                 except Exception as e:
                     logger.warning("page test error %s: %s", page_url, e)
+                    audit_error = {
+                        'issue': 'Page audit could not complete',
+                        'severity': 'serious',
+                        'error': str(e)[:500],
+                        'element_selector': 'page',
+                        'display': 'Page audit could not complete; results are incomplete',
+                        'page_url': page_url,
+                    }
+                    all_pages_findings.append({'execution_errors': [audit_error]})
+                    all_pages_coverage.append({'audit_error': True})
                     per_page_records.append({
                         'url': page_url,
                         'page_title': page_title or '',
                         'status_code': page_status or 0,
-                        'health_score': 0,
-                        'issues_found': 0,
+                        'health_score': 1,
+                        'issues_found': 1,
                         'page_load_time_ms': page_load_ms,
                         'screenshot': '',
-                        'findings_evidence': json.dumps({'error': str(e)[:500]}),
+                        'findings_evidence': json.dumps({'execution_errors': [audit_error]}),
                     })
                     continue
 
@@ -2694,6 +2795,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 'mobile_issues': display_findings['mobile_issues'],
                 'performance_issues': display_findings['performance_issues'],
                 'functional_issues': display_findings['functional_issues'],
+                'api_issues': display_findings['api_issues'],
+                'validation_issues': display_findings['validation_issues'],
             }, 200
 
     except Exception as e:

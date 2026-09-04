@@ -5,7 +5,7 @@ import {
   Plus, FlaskConical, Bot, Play, History, Pencil, Trash2,
   CheckCircle2, XCircle, Wand2, X, Clock, Gauge,
   Package, Repeat, Link2, Bug, ImageOff, Search, ShieldAlert,
-  Accessibility, Smartphone, Camera, Loader2, Inbox, PartyPopper,
+  Accessibility, Camera, Loader2, Inbox, PartyPopper,
   ChevronDown, ChevronRight, Network, AlertTriangle,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
@@ -23,24 +23,6 @@ import { runTestCaseAsync, getRunJob, cancelRunJob, getTestRuns, getCrawledPages
 import { createBugsFromTestRun } from '../api/bugs';
 
 // ---- pure helpers (module scope) ----
-
-// What each mode is allowed to be used for. This mirrors TEST_PURPOSES in
-// backend/modules/testcases/routes.py, which rejects any other pairing, so
-// the two lists must be changed together.
-const TEST_PURPOSES = {
-  manual: [
-    ['functional', 'Functional'],
-    ['exploratory', 'Exploratory'],
-    ['usability', 'Usability'],
-    ['ad_hoc', 'Ad-hoc'],
-  ],
-  automated: [
-    ['functional', 'Functional'],
-    ['regression', 'Regression'],
-    ['performance', 'Performance'],
-    ['accessibility', 'Accessibility'],
-  ],
-};
 
 const scoreColor = (score) => {
   if (score >= 90) return { text: 'text-brand-teal', border: 'border-brand-teal/50', bar: 'bg-brand-teal', label: 'Excellent' };
@@ -82,9 +64,10 @@ const CATEGORY_META = {
   seo_issues: { Icon: Search, label: 'SEO Issues', tone: 'text-amber-300 bg-amber-500/15' },
   security_issues: { Icon: ShieldAlert, label: 'Security Issues', tone: 'text-red-300 bg-red-500/15' },
   accessibility_issues: { Icon: Accessibility, label: 'Accessibility Issues', tone: 'text-brand-indigo bg-brand-indigo/15' },
-  mobile_issues: { Icon: Smartphone, label: 'Mobile Issues', tone: 'text-brand-sky bg-brand-sky/15' },
   performance_issues: { Icon: Gauge, label: 'Performance', tone: 'text-amber-300 bg-amber-500/15' },
   functional_issues: { Icon: XCircle, label: 'Functional Failures', tone: 'text-red-200 bg-red-500/25' },
+  api_issues: { Icon: Network, label: 'API Failures', tone: 'text-red-300 bg-red-500/15' },
+  validation_issues: { Icon: AlertTriangle, label: 'Form Validation', tone: 'text-amber-300 bg-amber-500/15' },
 };
 
 // Severity is now graded per finding, not per category, so show it.
@@ -296,8 +279,9 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
     'SEO': (findings.seo_issues || []).length,
     'Security': (findings.security_issues || []).length,
     'Accessibility': (findings.accessibility_issues || []).length,
-    'Mobile': (findings.mobile_issues || []).length,
     'Performance': (findings.performance_issues || []).length,
+    'API Failures': (findings.api_issues || []).length,
+    'Validation': (findings.validation_issues || []).length,
   } : null;
 
   return (
@@ -460,7 +444,6 @@ const TestCases = () => {
   const [expectedResult, setExpectedResult] = useState('');
   const [priority, setPriority] = useState('Medium');
   const [testType, setTestType] = useState('manual');
-  const [testPurpose, setTestPurpose] = useState('functional');
   const [checkDeadControls, setCheckDeadControls] = useState(false);
   const [maxPages, setMaxPages] = useState(25);
 
@@ -555,8 +538,8 @@ const TestCases = () => {
   };
 
   const isTitleValid = title.trim().length >= 3;
-  const isStepsValid = steps.trim().length > 0;
-  const isExpectedValid = expectedResult.trim().length > 0;
+  const isStepsValid = testType === 'automated' || steps.trim().length > 0;
+  const isExpectedValid = testType === 'automated' || expectedResult.trim().length > 0;
   const canSubmit = Boolean(projectId) && isTitleValid && isStepsValid && isExpectedValid && !saving;
 
   // ===== Form helpers =====
@@ -568,19 +551,9 @@ const TestCases = () => {
     setExpectedResult('');
     setPriority('Medium');
     setTestType('manual');
-    setTestPurpose('functional');
     setCheckDeadControls(false);
     setMaxPages(25);
     setFormError('');
-  };
-
-  // Purposes are mode-specific, so switching mode has to drop a purpose the
-  // new mode cannot run. The API rejects those pairings outright.
-  const changeTestType = (next) => {
-    setTestType(next);
-    if (!TEST_PURPOSES[next].some(([value]) => value === testPurpose)) {
-      setTestPurpose('functional');
-    }
   };
 
   const openCreateModal = () => {
@@ -598,7 +571,6 @@ const TestCases = () => {
     setExpectedResult(tc.expected_result || '');
     setPriority(tc.priority || 'Medium');
     setTestType(tc.test_type || 'manual');
-    setTestPurpose(tc.test_purpose || 'functional');
     setCheckDeadControls(Boolean(tc.check_dead_controls));
     setMaxPages(tc.max_pages || 25);
     setFormError('');
@@ -625,14 +597,12 @@ const TestCases = () => {
       expected_result: expectedResult.trim(),
       priority,
       test_type: testType,
-      test_purpose: testPurpose,
       // Off unless asked for: the check clicks real controls on the site.
       check_dead_controls: checkDeadControls,
-      // Playwright drives every automated run, so record that rather than let
-      // the user claim a framework the platform does not actually use.
-      automation_framework: testType === 'automated' ? 'playwright' : 'none',
       // Deliberately no `status`: Pass/Fail is a result, and only a recorded
       // run may set it. A new test case starts Pending.
+      // No `automation_framework` either: the platform's only runner is
+      // Playwright, so storing the claim would add a column nobody reads.
       // Automated = crawl the whole site; manual = just the single page.
       crawl_pages: testType === 'automated',
       // Manual runs crawl too, so the page limit applies to both. It used to
@@ -775,6 +745,9 @@ const TestCases = () => {
   const openManualRun = async (tc) => {
     setManualBusy(true);
     setManualMessage('');
+    setExpectedMet(null);
+    setIssueTitle('');
+    setConversionMessage('');
     setManualNote('');
     setManualSnap(null);
     setManualRunFor(tc);
@@ -842,6 +815,24 @@ const TestCases = () => {
 
   const finishManual = async (outcome) => {
     if (!manualRunFor) return;
+    // A Pass that skips over unchecked or failed checklist steps is a hollow
+    // verdict: the record would claim the whole checklist was verified. The
+    // tester may still have reasons to give one, but they should have to
+    // confirm it rather than click past it.
+    const steps = manualSnap?.steps || [];
+    if (outcome === 'Pass' && steps.length > 0) {
+      const unchecked = steps.filter((s) => s.status === 'pending').length;
+      const failed = steps.filter((s) => s.status === 'failed').length;
+      if (unchecked > 0 || failed > 0) {
+        const bits = [];
+        if (unchecked > 0) bits.push(`${unchecked} step${unchecked !== 1 ? 's' : ''} still unchecked`);
+        if (failed > 0) bits.push(`${failed} step${failed !== 1 ? 's' : ''} marked failed`);
+        const proceed = window.confirm(
+          `Mark Pass even though there ${unchecked + failed === 1 ? 'is' : 'are'} ${bits.join(' and ')}?`
+        );
+        if (!proceed) return;
+      }
+    }
     setManualBusy(true);
     setManualMessage('');
     try {
@@ -1220,33 +1211,19 @@ const TestCases = () => {
                 <div className="flex gap-3">
                   <label className={toggleClass(testType === 'manual')}>
                     <input type="radio" name="test-type" value="manual" checked={testType === 'manual'}
-                      onChange={(e) => changeTestType(e.target.value)} className="sr-only" />
+                      onChange={(e) => setTestType(e.target.value)} className="sr-only" />
                     <span className="inline-flex items-center gap-1.5"><FlaskConical className="w-4 h-4" /> Manual</span>
                   </label>
                   <label className={toggleClass(testType === 'automated')}>
                     <input type="radio" name="test-type" value="automated" checked={testType === 'automated'}
-                      onChange={(e) => changeTestType(e.target.value)} className="sr-only" />
+                      onChange={(e) => setTestType(e.target.value)} className="sr-only" />
                     <span className="inline-flex items-center gap-1.5"><Bot className="w-4 h-4" /> Automated</span>
                   </label>
                 </div>
-              </div>
-
-              <div>
-                <label htmlFor="tc-purpose" className="block text-slate-300 text-sm font-medium mb-1.5">Test Purpose *</label>
-                <select
-                  id="tc-purpose"
-                  value={testPurpose}
-                  onChange={(e) => setTestPurpose(e.target.value)}
-                  className={`${inputBase} border-white/10 focus:ring-brand-sky/60`}
-                >
-                  {TEST_PURPOSES[testType].map(([value, label]) => (
-                    <option key={value} value={value} className="bg-surface">{label}</option>
-                  ))}
-                </select>
                 <p className="text-xs text-slate-500 mt-1.5">
                   {testType === 'automated'
-                    ? 'What this run is for. Automated runs repeat the same checks the same way, which is what makes regression and performance comparisons meaningful.'
-                    : 'What this session is for. Manual runs cover the judgement calls a script cannot make.'}
+                    ? 'The browser runs the steps and audits every page the same way each time, which is what makes repeat runs comparable.'
+                    : 'A person walks the checklist in a real browser and judges what a script cannot.'}
                 </p>
               </div>
 
@@ -1261,7 +1238,7 @@ const TestCases = () => {
                         <p className="font-medium text-white">Full Site Test</p>
                         <p className="text-xs text-slate-300 mt-1">
                           The platform will automatically discover and test every page on your site.
-                          Each page is checked for broken links, accessibility, security, mobile
+                          Each page is checked for broken links, accessibility, security
                           usability, SEO and performance, and your steps run in a real browser.
                         </p>
                         <p className="text-xs text-brand-sky mt-2">Larger sites take 2-10 minutes to complete.</p>
@@ -1297,29 +1274,34 @@ const TestCases = () => {
               </div>
 
               {/* Off by default on purpose. This clicks real controls on a
-                  live site, which can submit a form or end a session. */}
-              <div className="rounded-xl border border-white/10 p-4">
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={checkDeadControls}
-                    onChange={(e) => setCheckDeadControls(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5"
-                  />
-                  <span>
-                    <span className="block text-slate-200 text-sm font-medium">
-                      Click controls to find dead buttons
+                  live site, which can submit a form or end a session. It is
+                  an automated-run check only: a person clicking things by
+                  hand IS the manual test, so the toggle means nothing there
+                  and is hidden rather than shown and ignored. */}
+              {testType === 'automated' && (
+                <div className="rounded-xl border border-white/10 p-4">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={checkDeadControls}
+                      onChange={(e) => setCheckDeadControls(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/5"
+                    />
+                    <span>
+                      <span className="block text-slate-200 text-sm font-medium">
+                        Click controls to find dead buttons
+                      </span>
+                      <span className="block text-xs text-slate-500 mt-1">
+                        Finds buttons wired to nothing, which nothing else here can
+                        see. The run skips anything inside a form and anything
+                        labelled Delete, Pay, Submit or Log out, but it does click
+                        real controls. Only switch this on for a site where a stray
+                        click is safe.
+                      </span>
                     </span>
-                    <span className="block text-xs text-slate-500 mt-1">
-                      Finds buttons wired to nothing, which nothing else here can
-                      see. The run skips anything inside a form and anything
-                      labelled Delete, Pay, Submit or Log out, but it does click
-                      real controls. Only switch this on for a site where a stray
-                      click is safe.
-                    </span>
-                  </span>
-                </label>
-              </div>
+                  </label>
+                </div>
+              )}
 
               <div>
                 <label htmlFor="tc-title" className="block text-slate-300 text-sm font-medium mb-1.5">Title *</label>
@@ -1339,21 +1321,28 @@ const TestCases = () => {
               </div>
 
               <div>
-                <label htmlFor="tc-steps" className="block text-slate-300 text-sm font-medium mb-1.5">Steps * (one per line)</label>
+                <label htmlFor="tc-steps" className="block text-slate-300 text-sm font-medium mb-1.5">
+                  {testType === 'automated' ? 'Steps (optional workflow)' : 'Steps * (one per line)'}
+                </label>
                 <textarea id="tc-steps" value={steps} onChange={(e) => setSteps(e.target.value)}
-                  placeholder={'Open /login\nType alice@example.com into Email\nType hunter2 into Password\nClick Sign in\nExpect text Welcome back\nExpect url contains /dashboard'}
+                  placeholder={testType === 'automated'
+                    ? 'Leave empty to let the platform audit the site automatically.\nOr add a workflow:\nOpen /login\nExpect text Sign in'
+                    : 'Open /login\nClick Sign in\nExpect text Email is required'}
                   rows="6"
                   className={`${inputBase} font-mono text-sm ${steps && !isStepsValid ? 'border-red-500/60 focus:ring-red-500/50' : 'border-white/10 focus:ring-brand-sky/60'}`} />
                 {testType === 'automated' ? (
                   <p className="text-xs text-slate-500 mt-1.5">
-                    These run in a real browser. Understood:{' '}
+                    Leave this blank for an autonomous site audit. Add steps only when you want to test a specific user journey. Supported workflow actions:{' '}
                     <span className="text-slate-400 font-mono">Open</span>,{' '}
                     <span className="text-slate-400 font-mono">Click</span>,{' '}
                     <span className="text-slate-400 font-mono">Type X into Y</span>,{' '}
+                    <span className="text-slate-400 font-mono">Select X in Y</span>,{' '}
+                    <span className="text-slate-400 font-mono">Tick / Uncheck</span>,{' '}
                     <span className="text-slate-400 font-mono">Press</span>,{' '}
                     <span className="text-slate-400 font-mono">Wait for</span>,{' '}
                     <span className="text-slate-400 font-mono">Expect text</span>,{' '}
-                    <span className="text-slate-400 font-mono">Expect url contains</span>.
+                    <span className="text-slate-400 font-mono">Expect no X</span>,{' '}
+                    <span className="text-slate-400 font-mono">Expect url contains / is</span>.
                     A step that fails is reported as a functional failure.
                   </p>
                 ) : (
@@ -1364,10 +1353,19 @@ const TestCases = () => {
               </div>
 
               <div>
-                <label htmlFor="tc-expected" className="block text-slate-300 text-sm font-medium mb-1.5">Expected Result *</label>
+                <label htmlFor="tc-expected" className="block text-slate-300 text-sm font-medium mb-1.5">
+                  {testType === 'automated' ? 'Expected Result (optional reference)' : 'Expected Result *'}
+                </label>
                 <textarea id="tc-expected" value={expectedResult} onChange={(e) => setExpectedResult(e.target.value)}
-                  placeholder="What should happen if the test passes?" rows="2"
+                  placeholder={testType === 'automated'
+                    ? 'Use Expect text ... or Expect url ... in Steps for an automated assertion'
+                    : 'What should happen if the test passes?'} rows="2"
                   className={`${inputBase} ${expectedResult && !isExpectedValid ? 'border-red-500/60 focus:ring-red-500/50' : 'border-white/10 focus:ring-brand-sky/60'}`} />
+                <p className="text-xs text-slate-500 mt-1.5">
+                  {testType === 'automated'
+                    ? 'This explains the goal for people reading the test. The runner only verifies Expect lines in Steps.'
+                    : 'After the manual checklist, compare what you saw with this result.'}
+                </p>
               </div>
 
               <div>
@@ -1579,14 +1577,16 @@ const TestCases = () => {
               {!runResult.is_multi_page && (
                 <>
                   <IssueCategory categoryKey="functional_issues" items={runResult.functional_issues} />
+                  <IssueCategory categoryKey="execution_errors" items={runResult.execution_errors} />
                   <IssueCategory categoryKey="broken_links" items={runResult.broken_links} />
                   <IssueCategory categoryKey="console_errors" items={runResult.console_errors} />
                   <IssueCategory categoryKey="missing_alt_images" items={runResult.missing_alt_images} />
                   <IssueCategory categoryKey="seo_issues" items={runResult.seo_issues} />
                   <IssueCategory categoryKey="security_issues" items={runResult.security_issues} />
                   <IssueCategory categoryKey="accessibility_issues" items={runResult.accessibility_issues} />
-                  <IssueCategory categoryKey="mobile_issues" items={runResult.mobile_issues} />
                   <IssueCategory categoryKey="performance_issues" items={runResult.performance_issues} />
+                  <IssueCategory categoryKey="api_issues" items={runResult.api_issues} />
+                  <IssueCategory categoryKey="validation_issues" items={runResult.validation_issues} />
                 </>
               )}
 
