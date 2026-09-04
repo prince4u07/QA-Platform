@@ -18,6 +18,7 @@ import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
 import {
   getSummary,
+  getDetectedIssues,
   getHealthTrend,
   getBugBreakdown,
   getTopCategories,
@@ -65,6 +66,7 @@ const Reports = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [summary, setSummary] = useState(null);
+  const [detectedIssues, setDetectedIssues] = useState([]);
   const [healthTrend, setHealthTrend] = useState([]);
   const [bugBreakdown, setBugBreakdown] = useState({ by_status: [], by_severity: [] });
   const [topCategories, setTopCategories] = useState([]);
@@ -85,29 +87,40 @@ const Reports = () => {
       // Only blank the screen when there is nothing on it yet.
       setRefreshing(true);
       try {
-        const [s, h, b, c, p, r] = await Promise.all([
+        const responses = await Promise.allSettled([
           getSummary(),
+          getDetectedIssues(),
           getHealthTrend(),
           getBugBreakdown(),
           getTopCategories(),
           getTestPassRate(),
           getRecentRuns(),
         ]);
-        setSummary(s.data);
         // Guard every list at the boundary. The charts call .length and .map
         // on these, so a single endpoint returning null or an unexpected
         // shape used to take the entire dashboard down with it. One panel
         // having no data is not a reason to lose the other five.
         const list = (value) => (Array.isArray(value) ? value : []);
 
-        setHealthTrend(list(h.data));
+        const value = (index) => responses[index].status === 'fulfilled'
+          ? responses[index].value.data : null;
+        const authFailure = responses.find((response) =>
+          response.status === 'rejected' && response.reason.response?.status === 401);
+        if (authFailure) {
+          localStorage.clear();
+          navigate('/login');
+          return;
+        }
+        setSummary(value(0));
+        setDetectedIssues(list(value(1)));
+        setHealthTrend(list(value(2)));
         setBugBreakdown({
-          by_status: list(b.data?.by_status),
-          by_severity: list(b.data?.by_severity),
+          by_status: list(value(3)?.by_status),
+          by_severity: list(value(3)?.by_severity),
         });
-        setTopCategories(list(c.data));
-        setPassRate(list(p.data));
-        setRecentRuns(list(r.data));
+        setTopCategories(list(value(4)));
+        setPassRate(list(value(5)));
+        setRecentRuns(list(value(6)));
       } catch (error) {
         if (error.response?.status === 401) {
           localStorage.clear();
@@ -283,6 +296,31 @@ const Reports = () => {
                 <Kpi value={summary.avg_resolution_days || '—'} suffix={summary.avg_resolution_days > 0 ? 'd' : ''} label="Avg Resolution" Icon={Clock} tone="text-white" />
               </div>
             )}
+
+            <div className="glass rounded-2xl p-5 mb-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-lg font-display font-bold text-white flex items-center gap-2">
+                  <Bug className="w-4 h-4 text-red-400" /> Detected Issues
+                </h2>
+                <span className="text-xs text-slate-500">Latest run per test case</span>
+              </div>
+              {detectedIssues.length === 0 ? (
+                <div className="text-center py-8 text-slate-500 text-sm">No issues detected in the latest runs.</div>
+              ) : (
+                <div className="space-y-2">
+                  {detectedIssues.slice(0, 12).map((finding) => (
+                    <div key={finding.id} className="flex items-start justify-between gap-4 p-3 bg-white/5 border border-white/10 rounded-xl">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-100">{finding.issue}</p>
+                        <p className="text-xs text-slate-500 mt-1">{finding.project_name} · {finding.test_case_title}{finding.location ? ' · ' + finding.location : ''}</p>
+                      </div>
+                      <span className="text-xs font-semibold text-red-300 whitespace-nowrap">{finding.severity}</span>
+                    </div>
+                  ))}
+                  {detectedIssues.length > 12 && <p className="text-xs text-slate-500 pt-2">Showing 12 of {detectedIssues.length} detected issues.</p>}
+                </div>
+              )}
+            </div>
 
             {/* CHARTS GRID */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">

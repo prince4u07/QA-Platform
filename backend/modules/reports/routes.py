@@ -15,6 +15,7 @@ from flask import Blueprint, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, timedelta
 from io import BytesIO
+import json
 
 reports_bp = Blueprint('reports', __name__)
 mysql = None
@@ -23,6 +24,65 @@ mysql = None
 def init_reports(app_mysql):
     global mysql
     mysql = app_mysql
+
+
+def _latest_detected_findings(user_id):
+    """Return the findings from each user's latest run per test case."""
+    cursor = mysql.connection.cursor()
+    cursor.execute(
+        """SELECT tr.id, tr.findings_evidence, tc.title AS test_case_title,
+                  p.name AS project_name
+           FROM test_runs tr
+           JOIN test_cases tc ON tr.test_case_id = tc.id
+           JOIN projects p ON tc.project_id = p.id
+           JOIN (
+             SELECT tr2.test_case_id, MAX(tr2.id) AS latest_id
+             FROM test_runs tr2
+             JOIN test_cases tc2 ON tr2.test_case_id = tc2.id
+             JOIN projects p2 ON tc2.project_id = p2.id
+             WHERE p2.user_id = %s
+             GROUP BY tr2.test_case_id
+           ) latest ON latest.latest_id = tr.id
+           WHERE p.user_id = %s""",
+        (user_id, user_id)
+    )
+    runs = cursor.fetchall()
+    cursor.close()
+
+    findings = []
+    bookkeeping = {
+        'manual', 'note', 'pages', 'steps', 'summary',
+        'expected_result', 'expected_met',
+    }
+    for run in runs:
+        try:
+            evidence = json.loads(run.get('findings_evidence') or '{}')
+        except (TypeError, ValueError):
+            continue
+        for category, items in evidence.items():
+            if category in bookkeeping:
+                continue
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    label = item.get('issue') or item.get('display') or 'Issue detected'
+                    severity = item.get('severity', 'moderate').capitalize()
+                    location = item.get('url') or item.get('page_url') or ''
+                else:
+                    label = str(item)
+                    severity = 'Moderate'
+                    location = ''
+                findings.append({
+                    'id': f"{run['id']}-{category}-{len(findings)}",
+                    'category': category,
+                    'issue': label,
+                    'severity': severity,
+                    'location': location,
+                    'test_case_title': run['test_case_title'],
+                    'project_name': run['project_name'],
+                })
+    return findings
 
 
 # ============================================================
@@ -121,6 +181,16 @@ def summary():
     user_id = int(get_jwt_identity())
     try:
         return jsonify(_build_summary(user_id)), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@reports_bp.route('/detected-issues', methods=['GET'])
+@jwt_required()
+def detected_issues():
+    user_id = int(get_jwt_identity())
+    try:
+        return jsonify(_latest_detected_findings(user_id)), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

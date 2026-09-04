@@ -11,11 +11,6 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 testcases_bp = Blueprint('testcases', __name__)
 mysql = None
 
-TEST_PURPOSES = {
-    'manual': {'functional', 'exploratory', 'usability', 'ad_hoc'},
-    'automated': {'functional', 'regression', 'performance', 'accessibility'},
-}
-
 
 def init_testcases(app_mysql):
     global mysql
@@ -46,18 +41,18 @@ def user_owns_testcase(user_id, testcase_id):
     return result is not None
 
 
-def test_settings(data):
-    """Return settings the platform can actually execute."""
+def validate_test_type(data):
+    """Return a valid test_type or raise ValueError.
+
+    There is no framework to choose or store: the platform has exactly one
+    runner (Playwright) for automated runs and none for manual ones. The old
+    automation_framework column could only ever say 'playwright' or 'none',
+    nothing ever read it back, and the UI never showed it, so it was dropped.
+    """
     test_type = data.get('test_type') or 'manual'
-    if test_type not in TEST_PURPOSES:
+    if test_type not in ('manual', 'automated'):
         raise ValueError('Test type must be manual or automated')
-
-    purpose = data.get('test_purpose') or 'functional'
-    if purpose not in TEST_PURPOSES[test_type]:
-        raise ValueError(f'Invalid purpose for a {test_type} test')
-
-    framework = 'playwright' if test_type == 'automated' else 'none'
-    return test_type, purpose, framework
+    return test_type
 
 
 # ============================================================
@@ -117,23 +112,27 @@ def create_testcase():
     if len(title) < 3:
         return jsonify({'error': 'Title must be at least 3 characters'}), 400
 
+    try:
+        test_type = validate_test_type(data)
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
+
     steps = (data.get('steps') or '').strip()
-    if not steps:
-        return jsonify({'error': 'Steps are required'}), 400
+    if test_type == 'manual' and not steps:
+        return jsonify({'error': 'Steps are required for manual tests'}), 400
 
     expected_result = (data.get('expected_result') or '').strip()
-    if not expected_result:
+    if test_type == 'manual' and not expected_result:
         return jsonify({'error': 'Expected result is required'}), 400
 
     description = (data.get('description') or '').strip()
     priority = data.get('priority') or 'Medium'
-    try:
-        test_type, test_purpose, automation_framework = test_settings(data)
-    except ValueError as error:
-        return jsonify({'error': str(error)}), 400
 
-    # NEW: crawl fields
-    crawl_pages = bool(data.get('crawl_pages', False))
+    # Automated runs crawl the site by contract. The UI never exposes crawling
+    # as a separate yes/no — an automated test always crawls up to max_pages —
+    # so trusting the client here would let a request ask for an automated test
+    # that silently audits a single page. Derive it exactly like the UI does.
+    crawl_pages = (test_type == 'automated')
     max_pages = int(data.get('max_pages') or 10)
     # Clamp max_pages to safe range
     if max_pages < 1:
@@ -149,13 +148,12 @@ def create_testcase():
         cursor.execute(
             """INSERT INTO test_cases (
                 project_id, title, description, steps, expected_result,
-                priority, status, test_type, automation_framework,
-                test_purpose, crawl_pages, max_pages,
-                check_dead_controls, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                priority, status, test_type,
+                crawl_pages, max_pages, check_dead_controls, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
             (project_id, title, description, steps, expected_result,
-             priority, 'Pending', test_type, automation_framework,
-             test_purpose, crawl_pages, max_pages, check_dead_controls)
+             priority, 'Pending', test_type,
+             crawl_pages, max_pages, check_dead_controls)
         )
         mysql.connection.commit()
         tc_id = cursor.lastrowid
@@ -182,19 +180,21 @@ def update_testcase(tc_id):
         return jsonify({'error': 'Title must be at least 3 characters'}), 400
 
     steps = (data.get('steps') or '').strip()
-    if not steps:
-        return jsonify({'error': 'Steps are required'}), 400
-
     expected_result = (data.get('expected_result') or '').strip()
-    if not expected_result:
+    test_type = data.get('test_type') or 'manual'
+    if test_type == 'manual' and not steps:
+        return jsonify({'error': 'Steps are required for manual tests'}), 400
+    if test_type == 'manual' and not expected_result:
         return jsonify({'error': 'Expected result is required'}), 400
 
     try:
-        test_type, test_purpose, automation_framework = test_settings(data)
+        test_type = validate_test_type(data)
     except ValueError as error:
         return jsonify({'error': str(error)}), 400
 
-    crawl_pages = bool(data.get('crawl_pages', False))
+    # Same derivation as create: an automated test crawls, a manual one is
+    # walked by a person. The client's own crawl_pages is never trusted.
+    crawl_pages = (test_type == 'automated')
     max_pages = int(data.get('max_pages') or 10)
     if max_pages < 1:
         max_pages = 1
@@ -207,8 +207,8 @@ def update_testcase(tc_id):
         cursor.execute(
             """UPDATE test_cases SET
                 title = %s, description = %s, steps = %s, expected_result = %s,
-                priority = %s, test_type = %s, automation_framework = %s,
-                test_purpose = %s, crawl_pages = %s, max_pages = %s,
+                priority = %s, test_type = %s,
+                crawl_pages = %s, max_pages = %s,
                 check_dead_controls = %s
                 WHERE id = %s""",
             (
@@ -217,8 +217,6 @@ def update_testcase(tc_id):
                 steps, expected_result,
                 data.get('priority') or 'Medium',
                 test_type,
-                automation_framework,
-                test_purpose,
                 crawl_pages, max_pages, check_dead_controls,
                 tc_id
             )
