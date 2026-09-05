@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Secrets — never commit. backend/.env holds the Anthropic API key, DB
+# Secrets — never commit. backend/.env holds the Gemini API key, DB
 # password and JWT secret; .env.example is the checked-in template.
 # ---------------------------------------------------------------------------
 .env
@@ -54,3 +54,4 @@ Thumbs.db
 # Word and Excel write a ~$ lock file next to any document that is open.
 # It is a few bytes of session state and must never reach the repo.
 ~$*
+docs/blackbook_draft_.docx

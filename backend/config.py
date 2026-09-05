@@ -27,9 +27,9 @@ class Config:
 
 
 
-    # AI - Anthropic Claude
-    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-    AI_MODEL = 'claude-haiku-4-5-20251001'
+    # AI - Google Gemini
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+    AI_MODEL = os.getenv('AI_MODEL', 'gemini-3.6-flash')
 
 
 

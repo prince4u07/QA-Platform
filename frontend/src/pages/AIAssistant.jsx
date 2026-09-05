@@ -172,7 +172,7 @@ const AIAssistant = () => {
               </span>
               AI Assistant
             </h1>
-            <p className="text-sm text-slate-400 mt-0.5">Powered by Claude · Ask anything about testing &amp; QA</p>
+            <p className="text-sm text-slate-400 mt-0.5">Powered by Gemini · Ask anything about testing &amp; QA</p>
           </div>
 
           <div className="flex items-center gap-4">
