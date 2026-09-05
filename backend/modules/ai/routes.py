@@ -233,7 +233,7 @@ def chat_endpoint():
 def health_check():
     """Quick check that AI is configured. Doesn't make an actual API call."""
     from flask import current_app
-    api_key = current_app.config.get('ANTHROPIC_API_KEY', '')
+    api_key = current_app.config.get('GEMINI_API_KEY', '')
     model = current_app.config.get('AI_MODEL', '')
 
     if not api_key:

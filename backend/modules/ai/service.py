@@ -1,5 +1,5 @@
 """
-AI Service - Wraps Anthropic Claude API for QA platform features.
+AI Service - Wraps the Google Gemini API for QA platform features.
 
 Functions:
 1. analyze_bug(bug_data) - Explains a bug in plain English with fix suggestions
@@ -8,22 +8,46 @@ Functions:
 4. chat(messages, context) - Conversational assistant for general questions
 """
 
-from anthropic import Anthropic
 from flask import current_app
 import json
+import requests
 
 
 def _get_client():
-    """Lazy-load Anthropic client (avoids loading at import time)"""
-    api_key = current_app.config.get('ANTHROPIC_API_KEY')
+    """Return Gemini request settings without creating a client at import time."""
+    api_key = current_app.config.get('GEMINI_API_KEY')
     if not api_key:
-        raise Exception('ANTHROPIC_API_KEY not configured')
-    return Anthropic(api_key=api_key)
+        raise Exception('GEMINI_API_KEY not configured')
+    return api_key
 
 
 def _get_model():
     """Returns the configured model name"""
-    return current_app.config.get('AI_MODEL', 'claude-haiku-4-5-20251001')
+    return current_app.config.get('AI_MODEL', 'gemini-3.6-flash')
+
+
+def _generate(prompt, max_tokens, system=None):
+    """Generate text from Gemini and return the first response candidate."""
+    api_key = _get_client()
+    payload = {
+        'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+        'generationConfig': {'maxOutputTokens': max_tokens},
+    }
+    if system:
+        payload['systemInstruction'] = {'parts': [{'text': system}]}
+
+    response = requests.post(
+        f'https://generativelanguage.googleapis.com/v1beta/models/{_get_model()}:generateContent',
+        params={'key': api_key},
+        json=payload,
+        timeout=60,
+    )
+    response.raise_for_status()
+    data = response.json()
+    try:
+        return ''.join(part.get('text', '') for part in data['candidates'][0]['content']['parts']).strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise Exception('Gemini returned an empty response') from exc
 
 
 # ============================================================
@@ -38,9 +62,7 @@ def analyze_bug(bug_data):
 
     Returns: dict with explanation, why_it_matters, how_to_fix, code_example
     """
-    client = _get_client()
-
-    # Build context for Claude
+    # Build context for Gemini
     bug_info = f"""
 Title: {bug_data.get('title', '')}
 Category: {bug_data.get('category', 'other')}
@@ -66,13 +88,7 @@ Respond in this EXACT JSON format (no markdown, just JSON):
 
 Important: Return ONLY valid JSON, no other text."""
 
-    response = client.messages.create(
-        model=_get_model(),
-        max_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = response.content[0].text.strip()
+    raw = _generate(prompt, max_tokens=800)
 
     # Strip markdown fences if Claude added them
     if raw.startswith('```'):
@@ -103,8 +119,6 @@ def suggest_test_cases(project_info):
 
     Returns: list of test case suggestions
     """
-    client = _get_client()
-
     info = f"""
 Project name: {project_info.get('name', '')}
 URL: {project_info.get('base_url', '')}
@@ -137,13 +151,7 @@ Test types: Use "automated" for tests that can be checked by scanning the page (
 
 Important: Return ONLY valid JSON, no other text."""
 
-    response = client.messages.create(
-        model=_get_model(),
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = response.content[0].text.strip()
+    raw = _generate(prompt, max_tokens=2000)
     if raw.startswith('```'):
         lines = raw.split('\n')
         raw = '\n'.join(lines[1:-1]) if lines[-1].startswith('```') else '\n'.join(lines[1:])
@@ -167,8 +175,6 @@ def suggest_fix(finding):
 
     Returns: dict with explanation and fix
     """
-    client = _get_client()
-
     category = finding.get('category', 'other')
     item = finding.get('item', '')
     context = finding.get('context', '')
@@ -189,13 +195,7 @@ Respond in this EXACT JSON format (no markdown, just JSON):
 
 Important: Return ONLY valid JSON, no other text."""
 
-    response = client.messages.create(
-        model=_get_model(),
-        max_tokens=600,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = response.content[0].text.strip()
+    raw = _generate(prompt, max_tokens=600)
     if raw.startswith('```'):
         lines = raw.split('\n')
         raw = '\n'.join(lines[1:-1]) if lines[-1].startswith('```') else '\n'.join(lines[1:])
@@ -225,8 +225,6 @@ def chat(user_message, context=None, conversation_history=None):
 
     Returns: string response
     """
-    client = _get_client()
-
     # Build system prompt
     system_prompt = """You are a helpful QA testing assistant integrated into a web testing platform.
 You help users understand bugs, write better test cases, and improve their websites.
@@ -246,11 +244,8 @@ If users ask about specific bugs or projects, use the provided context to answer
 
     messages.append({"role": "user", "content": user_content})
 
-    response = client.messages.create(
-        model=_get_model(),
-        max_tokens=1000,
-        system=system_prompt,
-        messages=messages
+    conversation_prompt = '\n\n'.join(
+        f"{message.get('role', 'user').capitalize()}: {message.get('content', '')}"
+        for message in messages
     )
-
-    return response.content[0].text
+    return _generate(conversation_prompt, max_tokens=1000, system=system_prompt)

@@ -15,8 +15,7 @@ Flask-Limiter==4.1.1
 # Testing
 pytest==9.0.3
 
-# AI (Anthropic Claude) - required by modules/ai/service.py
-anthropic==0.69.0
+# AI requests use the existing requests dependency in modules/ai/service.py
 
 # Web testing / scraping
 playwright==1.59.0

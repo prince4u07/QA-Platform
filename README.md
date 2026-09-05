@@ -29,7 +29,7 @@ QA Platform is a full-stack application for managing software quality workflows.
 - Bug tracking with AI-assisted analysis
 - Test reports and PDF generation
 - JWT authentication and admin controls
-- AI assistant powered by Anthropic Claude
+- AI assistant powered by Google Gemini
 
 ## How it works
 
@@ -63,7 +63,7 @@ Vite frontend (localhost:5173)
    v
 Flask API (127.0.0.1:5000)
    |              |                |
-   |              |                `-- Anthropic Claude API
+   |              |                `-- Google Gemini API
    |              `-- Playwright browser runner
    `-- MySQL database
 ```
@@ -119,7 +119,7 @@ playwright install chromium
 Copy-Item .env.example .env
 ```
 
-Edit `backend/.env` and provide your MySQL credentials, JWT secret, admin email, and Anthropic API key:
+Edit `backend/.env` and provide your MySQL credentials, JWT secret, admin email, and Gemini API key:
 
 ```env
 DB_HOST=localhost
@@ -127,7 +127,7 @@ DB_USER=root
 DB_PASSWORD=your-password
 DB_NAME=qa_platform
 JWT_SECRET_KEY=your-long-random-secret
-ANTHROPIC_API_KEY=your-anthropic-api-key
+GEMINI_API_KEY=your-gemini-api-key
 ADMIN_EMAIL=admin@example.com
 ```
 
@@ -171,7 +171,7 @@ Configuration is loaded from `backend/.env` through `python-dotenv`.
 | `DB_PASSWORD` | Yes | MySQL password | `change-me` |
 | `DB_NAME` | Yes | Database name | `qa_platform` |
 | `JWT_SECRET_KEY` | Yes | Signs authentication tokens | A long random value |
-| `ANTHROPIC_API_KEY` | For AI features | Authenticates Anthropic requests | `sk-ant-...` |
+| `GEMINI_API_KEY` | For AI features | Authenticates Gemini requests | `your-gemini-api-key` |
 | `ADMIN_EMAIL` | For admin access | Registration email assigned admin rights | `admin@example.com` |
 | `FLASK_DEBUG` | Optional | Development debug setting | `0` |
 
@@ -335,7 +335,7 @@ Vite automatically tries another available port. If the Flask port is occupied, 
 
 ### AI features are unavailable
 
-Confirm that `ANTHROPIC_API_KEY` is present in `backend/.env`, restart Flask, and request `/api/ai/health` again.
+Confirm that `GEMINI_API_KEY` is present in `backend/.env`, restart Flask, and request `/api/ai/health` again.
 
 ## Security
 
