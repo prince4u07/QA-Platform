@@ -32,6 +32,43 @@ const CATEGORY_LABEL = {
   'accessibility': 'Accessibility', 'mobile': 'Mobile', 'other': 'Other',
 };
 
+const friendlyDetectedBug = (bug) => {
+  if (!bug?.test_run_id || bug.category !== 'console-error') return bug;
+  const raw = `${bug.title || ''} ${bug.actual_behavior || ''}`;
+  const statusMatch = raw.match(/(?:status of|HTTP\s*)(\d{3})/i);
+  if (!/failed to load resource/i.test(raw) || !statusMatch) return bug;
+
+  const status = Number(statusMatch[1]);
+  const meaning = {
+    400: 'the request was invalid',
+    401: 'sign-in may be required',
+    403: 'access was denied',
+    404: 'the resource was not found',
+    500: 'the server encountered an error',
+    502: 'the server is unavailable',
+    503: 'the service is temporarily unavailable',
+  }[status] || `the server returned HTTP ${status}`;
+  const guidance = {
+    400: 'The page sent information the server could not accept.',
+    401: 'The user may need to sign in again or the session may have expired.',
+    403: 'The current user may not have permission to access it.',
+    404: 'The requested page or file may no longer exist at that address.',
+  }[status] || 'The server could not provide the resource the page requested.';
+  const evidence = typeof bug.evidence === 'string'
+    ? (() => { try { return JSON.parse(bug.evidence); } catch { return {}; } })()
+    : (bug.evidence || {});
+  const source = evidence.source_location?.url;
+  const sourceLine = Number.isInteger(evidence.source_location?.lineNumber)
+    ? `:${evidence.source_location.lineNumber + 1}` : '';
+
+  return {
+    ...bug,
+    displayTitle: `The page could not load a required resource (${meaning})`,
+    displayDescription: `The page tried to load a required resource, but the server returned HTTP ${status}. ${guidance}` +
+      ` Where to change: ${source ? `inspect ${source}${sourceLine} and fix the request there.` : 'open DevTools > Network, select the failed request, and fix the frontend request or backend API route.'}`,
+  };
+};
+
 const StatTile = ({ value, label, tone, Icon }) => (
   <div className="glass rounded-xl p-4 text-center">
     <div className={'text-2xl font-display font-bold flex items-center justify-center gap-1.5 ' + tone}>
@@ -445,6 +482,7 @@ const BugTracker = () => {
         ) : (
           <div className="space-y-3">
             {displayedBugs.map((bug, i) => {
+              const displayBug = friendlyDetectedBug(bug);
               const hasImage = bugHasImage(bug);
               const CIcon = CATEGORY_ICON[bug.category] || Bug;
               return (
@@ -479,10 +517,10 @@ const BugTracker = () => {
                       </div>
 
                       <h3 className="text-base font-semibold text-white cursor-pointer hover:text-brand-sky break-words" onClick={() => openDetail(bug)}>
-                        {bug.title}
+                        {displayBug.displayTitle || bug.title}
                       </h3>
 
-                      {bug.description && <p className="text-sm text-slate-400 mt-1 line-clamp-2">{bug.description}</p>}
+                      {(displayBug.displayDescription || bug.description) && <p className="text-sm text-slate-400 mt-1 line-clamp-2">{displayBug.displayDescription || bug.description}</p>}
 
                       <div className="flex flex-wrap gap-2 mt-3">
                         {nextStatus(bug.status) && (
@@ -617,6 +655,7 @@ const BugTracker = () => {
 
       {/* DETAIL MODAL */}
       {detailBug && (() => {
+        const displayBug = friendlyDetectedBug(detailBug);
         const evidence = parseEvidence(detailBug.evidence);
         const showEvidencePanel = bugHasMeaningfulEvidence(detailBug);
 
@@ -638,7 +677,7 @@ const BugTracker = () => {
                       <span className="inline-flex items-center gap-1 text-xs text-brand-indigo bg-brand-indigo/15 px-2 py-0.5 rounded"><Bot className="w-3 h-3" /> Auto-detected</span>
                     )}
                   </div>
-                  <h2 className="text-xl font-display font-bold text-white break-words">{detailBug.title}</h2>
+                  <h2 className="text-xl font-display font-bold text-white break-words">{displayBug.displayTitle || detailBug.title}</h2>
                 </div>
                 <button onClick={closeDetail} className="text-slate-500 hover:text-slate-200 transition" aria-label="Close"><X className="w-5 h-5" /></button>
               </div>
@@ -772,10 +811,10 @@ const BugTracker = () => {
                   )}
                 </div>
 
-                {detailBug.description && (
+                {(displayBug.displayDescription || detailBug.description) && (
                   <div>
                     <p className="text-xs font-semibold text-slate-500 mb-1">DESCRIPTION</p>
-                    <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">{detailBug.description}</pre>
+                    <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">{displayBug.displayDescription || detailBug.description}</pre>
                   </div>
                 )}
                 {detailBug.steps_to_reproduce && (
