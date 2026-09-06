@@ -2430,6 +2430,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 console_messages.append({
                     'type': msg.type,
                     'text': msg.text,
+                    'page_url': crawl_page.url,
+                    'source_location': msg.location,
                     'display': f"[{msg.type}] {msg.text[:200]}"
                 }) if msg.type in ('error', 'warning') else None
             )

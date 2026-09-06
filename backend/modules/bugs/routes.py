@@ -10,6 +10,7 @@ Now generates:
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import json
+import re
 
 bugs_bp = Blueprint('bugs', __name__)
 mysql = None
@@ -344,8 +345,21 @@ def _smart_title_for_finding(category, finding):
 
     # === CONSOLE ERRORS ===
     if category == 'console_errors':
-        text = finding.get('text', '')[:80]
-        return f"🐛 JavaScript error: {text}"
+        text = finding.get('text', '')
+        status_match = re.search(r'(?:status of|HTTP\s*)(\d{3})', text, re.IGNORECASE)
+        if 'failed to load resource' in text.lower() and status_match:
+            status = int(status_match.group(1))
+            meaning = {
+                400: 'the request was invalid',
+                401: 'sign-in may be required',
+                403: 'access was denied',
+                404: 'the resource was not found',
+                500: 'the server encountered an error',
+                502: 'the server is unavailable',
+                503: 'the service is temporarily unavailable',
+            }.get(status, f'the server returned HTTP {status}')
+            return f"🐛 The page could not load a required resource ({meaning})"
+        return f"🐛 JavaScript error affecting the page: {text[:80]}"
 
     # === MISSING ALT ===
     if category == 'missing_alt_images':
@@ -426,9 +440,40 @@ def _smart_description_for_finding(category, finding):
         parts.append("Screen readers (used by blind/visually impaired users) can't describe this image. Search engines also can't understand it.")
 
     elif category == 'console_errors':
+        text = finding.get('text', '')
+        status_match = re.search(r'(?:status of|HTTP\s*)(\d{3})', text, re.IGNORECASE)
         parts.append(f"**What's wrong:**")
-        parts.append(f"JavaScript error in browser console:")
-        parts.append(f"`{finding.get('text', '')[:300]}`")
+        if 'failed to load resource' in text.lower() and status_match:
+            status = int(status_match.group(1))
+            status_label = _http_status_label(status)
+            parts.append(f"The page tried to load a required resource, but the server returned HTTP {status} ({status_label}).")
+            if status == 401:
+                parts.append("This usually means the user needs to sign in again or the session has expired.")
+            elif status == 400:
+                parts.append("This usually means the page sent information the server could not accept.")
+            elif status == 403:
+                parts.append("This usually means the current user is not allowed to access it.")
+            elif status == 404:
+                parts.append("This usually means the requested page or file no longer exists at that address.")
+        else:
+            parts.append("A JavaScript error occurred while the page was running:")
+            parts.append(f"`{text[:300]}`")
+        parts.append("\n**Where to change:**")
+        if finding.get('page_url'):
+            parts.append(f"Start on this page: `{finding['page_url']}`")
+        if (finding.get('source_location') or {}).get('url'):
+            location = finding['source_location']
+            source = location['url']
+            line = location.get('lineNumber')
+            column = location.get('columnNumber')
+            suffix = f":{line + 1}" if isinstance(line, int) else ''
+            if isinstance(column, int):
+                suffix += f":{column + 1}"
+            parts.append(f"Inspect the JavaScript file at `{source}{suffix}`. Fix the request or code at that location.")
+        elif status_match:
+            parts.append("Open browser DevTools > Network, select the failed request, and fix the frontend request or the backend API route that serves it.")
+        else:
+            parts.append("Open browser DevTools > Console, select the error's source link, and fix the JavaScript file and line shown there.")
         parts.append(f"\n**Why this matters:**")
         parts.append("JavaScript errors can break interactive features (buttons, forms, animations). Users may experience unexpected behavior.")
 
@@ -482,6 +527,20 @@ def _smart_description_for_finding(category, finding):
     # Always include location info if available
     if finding.get('element_selector') and finding['element_selector'] != 'console':
         parts.append(f"\n**Technical location:** `{finding['element_selector']}`")
+
+    change_guidance = {
+        'broken_links': 'Update the href in the link element, or restore/fix the destination URL shown above.',
+        'missing_alt_images': 'Add descriptive alt text to this image element in the page template or component.',
+        'seo_issues': 'Update the matching element inside the page <head> or page template.',
+        'security_issues': 'Update the web server, reverse proxy, or application security-header configuration.',
+        'accessibility_issues': 'Update the HTML/component identified by the selector to meet the accessibility requirement.',
+        'mobile_issues': 'Update the CSS or component styles for the elements listed in this finding.',
+        'api_issues': 'Fix the frontend API call or the backend endpoint serving the request URL.',
+        'validation_issues': 'Update the form control or validation handler identified by this finding.',
+    }
+    if category != 'console_errors':
+        parts.append("\n**Where to change:**")
+        parts.append(change_guidance.get(category, 'Open the page and update the code identified by the technical location above.'))
 
     return '\n'.join(parts)
 
