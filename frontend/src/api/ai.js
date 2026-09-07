@@ -1,12 +1,6 @@
-import axios from 'axios';
+import axios, { getAuthHeader } from './axiosConfig';
 
 const API_URL = '/ai';
-
-const getAuthHeader = () => ({
-  headers: {
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  },
-});
 
 // AI calls can be slow (1-5 seconds), give them extra time
 const AI_TIMEOUT = 60000; // 60 seconds

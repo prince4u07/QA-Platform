@@ -1,12 +1,6 @@
-import axios from 'axios';
+import axios, { getAuthHeader } from './axiosConfig';
 
 const API_URL = '/bugs';
-
-const getAuthHeader = () => ({
-  headers: {
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  },
-});
 
 // List bugs (with optional filters)
 // filters: { status, severity, category, project_id }

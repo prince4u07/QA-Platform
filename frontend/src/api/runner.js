@@ -1,12 +1,6 @@
-import axios from 'axios';
+import axios, { getAuthHeader } from './axiosConfig';
 
-const API_URL = 'http://127.0.0.1:5000/api/runner';
-
-const getAuthHeader = () => ({
-  headers: {
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  },
-});
+const API_URL = '/runner';
 
 // Queue a test run on a background worker; returns { job_id } immediately.
 export const runTestCaseAsync = (testCaseId) =>
