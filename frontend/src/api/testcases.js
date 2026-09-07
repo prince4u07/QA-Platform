@@ -1,12 +1,6 @@
-import axios from 'axios';
+import axios, { getAuthHeader } from './axiosConfig';
 
-const API_URL = 'http://127.0.0.1:5000/api/testcases';
-
-const getAuthHeader = () => ({
-  headers: {
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  },
-});
+const API_URL = '/testcases';
 
 // List test cases (optional project filter)
 export const getTestCases = (projectId) => {
@@ -25,7 +19,3 @@ export const updateTestCase = (id, data) =>
 // Delete
 export const deleteTestCase = (id) =>
   axios.delete(`${API_URL}/${id}`, getAuthHeader());
-
-// Stats
-export const getTestCaseStats = () =>
-  axios.get(`${API_URL}/stats`, getAuthHeader());

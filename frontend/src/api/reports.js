@@ -1,12 +1,6 @@
-import axios from 'axios';
+import axios, { getAuthHeader } from './axiosConfig';
 
 const API_URL = '/reports';
-
-const getAuthHeader = () => ({
-  headers: {
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  },
-});
 
 // Top-level KPI cards
 export const getSummary = () =>

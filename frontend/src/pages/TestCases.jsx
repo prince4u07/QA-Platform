@@ -21,6 +21,7 @@ import { runTestCaseAsync, getRunJob, cancelRunJob, getTestRuns, getCrawledPages
   startManualRun, getManualRunStatus, finishManualRun, cancelManualRun,
   markManualStep, reportManualIssue } from '../api/runner';
 import { createBugsFromTestRun } from '../api/bugs';
+import { imgUrl } from '../api/axiosConfig';
 
 // ---- pure helpers (module scope) ----
 
@@ -372,9 +373,9 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
                       <p className="text-xs font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
                         <Camera className="w-3.5 h-3.5" /> Page Screenshot
                       </p>
-                      <a href={'http://127.0.0.1:5000' + page.screenshot} target="_blank" rel="noopener noreferrer">
+                      <a href={imgUrl(page.screenshot)} target="_blank" rel="noopener noreferrer">
                         <img
-                          src={'http://127.0.0.1:5000' + page.screenshot}
+                          src={imgUrl(page.screenshot)}
                           alt={'Screenshot of ' + page.url}
                           className="max-h-48 border border-white/10 rounded-lg hover:border-brand-sky/50 transition"
                         />
@@ -1763,12 +1764,12 @@ const TestCases = () => {
                 </div>
               ) : (
                 manualSnap.pages.map((p, i) => (
-                  <a key={i} href={`http://127.0.0.1:5000${p.screenshot}`} target="_blank" rel="noreferrer"
+                  <a key={i} href={imgUrl(p.screenshot)} target="_blank" rel="noreferrer"
                     className="flex gap-3 items-center bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg p-2 transition">
                     <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded bg-brand-indigo/20 text-brand-indigo text-xs font-bold">
                       {i + 1}
                     </span>
-                    <img src={`http://127.0.0.1:5000${p.screenshot}`} alt=""
+                    <img src={imgUrl(p.screenshot)} alt=""
                       className="w-16 h-12 object-cover rounded border border-white/10" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-white truncate">{p.url}</div>

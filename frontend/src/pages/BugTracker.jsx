@@ -19,17 +19,22 @@ import {
   deleteBug,
 } from '../api/bugs';
 import { analyzeBug } from '../api/ai';
+import { imgUrl } from '../api/axiosConfig';
 
 const CATEGORY_ICON = {
   'broken-link': Link2, 'console-error': Bug, 'missing-alt': ImageOff,
   'seo': Search, 'security': ShieldAlert, 'accessibility': Accessibility,
-  'mobile': Smartphone, 'other': Bug,
+  'mobile': Smartphone, 'performance': Clock, 'functional': AlertCircle,
+  'api': Code, 'validation': FileText, 'execution': RefreshCw, 'other': Bug,
 };
 
 const CATEGORY_LABEL = {
   'broken-link': 'Broken Link', 'console-error': 'JS Error',
   'missing-alt': 'Missing Alt', 'seo': 'SEO', 'security': 'Security',
-  'accessibility': 'Accessibility', 'mobile': 'Mobile', 'other': 'Other',
+  'accessibility': 'Accessibility', 'mobile': 'Mobile',
+  'performance': 'Performance', 'functional': 'Feature Broken',
+  'api': 'Data Request Failed', 'validation': 'Form Problem',
+  'execution': 'Audit Incomplete', 'other': 'Other',
 };
 
 const friendlyDetectedBug = (bug) => {
@@ -701,9 +706,9 @@ const BugTracker = () => {
                         <p className="text-xs font-semibold text-brand-sky mb-2">SCREENSHOT — CLICK TO ENLARGE</p>
                         <div
                           className="border border-brand-sky/40 rounded-lg overflow-hidden bg-white/5 inline-block cursor-pointer hover:border-brand-sky transition"
-                          onClick={() => setEnlargedEvidence('http://127.0.0.1:5000' + evidence.screenshot_crop)}
+                          onClick={() => setEnlargedEvidence(imgUrl(evidence.screenshot_crop))}
                         >
-                          <img src={'http://127.0.0.1:5000' + evidence.screenshot_crop} alt="Visual proof of the issue"
+                          <img src={imgUrl(evidence.screenshot_crop)} alt="Visual proof of the issue"
                             className="max-w-full max-h-64 object-contain"
                             onError={(e) => { e.target.parentElement.style.display = 'none'; }} />
                         </div>

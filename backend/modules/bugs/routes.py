@@ -10,7 +10,10 @@ Now generates:
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import json
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 bugs_bp = Blueprint('bugs', __name__)
 mysql = None
@@ -388,10 +391,34 @@ def _smart_title_for_finding(category, finding):
         return f"📱 {finding.get('issue', 'Mobile issue')}"
 
     if category == 'api_issues':
-        return f"🔌 API request failed: {finding.get('issue') or finding.get('url', 'request')}"
+        url = finding.get('url', '')
+        try:
+            short = url.split('?')[0].rstrip('/').rsplit('/', 1)[-1][:60] or url[:60]
+        except Exception:
+            short = url[:60]
+        status = finding.get('status')
+        detail = f' (HTTP {status})' if status else ''
+        return f"🔌 Data request to \"{short}\" failed{detail}"
 
     if category == 'validation_issues':
-        return f"📝 Form validation failed: {finding.get('issue', 'invalid form behavior')}"
+        form_idx = finding.get('form_index')
+        form_id = finding.get('form_id')
+        if form_id:
+            form_ref = f'form "#{form_id}"'
+        elif isinstance(form_idx, int):
+            form_ref = f'form #{form_idx + 1}'
+        else:
+            form_ref = 'a form'
+        count = finding.get('required_count')
+        count_txt = f' ({count} required field(s) unchecked)' if count else ''
+        return f"📝 {form_ref} accepts empty submission{count_txt}"
+
+    if category == 'performance_issues':
+        return f"⏱ {finding.get('issue') or finding.get('display') or 'Page is slow or heavy'}"
+
+    if category == 'functional_issues':
+        step = finding.get('step') or finding.get('issue') or 'workflow step'
+        return f"❌ Workflow step failed: {str(step)[:100]}"
 
     if category == 'execution_errors':
         return f"⚠️ Page audit incomplete: {finding.get('error') or finding.get('issue', 'audit error')}"
@@ -521,6 +548,44 @@ def _smart_description_for_finding(category, finding):
         parts.append(f"\n**Why this matters:**")
         parts.append("This affects how your site appears in search engines and browser tabs. Lower visibility = fewer visitors.")
 
+    elif category == 'performance_issues':
+        parts.append("**What's wrong:**")
+        parts.append(finding.get('display') or finding.get('issue', 'Page is slow or heavy'))
+        metric = finding.get('metric')
+        value = finding.get('value')
+        threshold = finding.get('threshold')
+        if metric and value is not None:
+            parts.append(f"Measured {value} vs target {threshold} for {metric}.")
+        resource = finding.get('resource')
+        if resource:
+            parts.append(f"Biggest file: `{str(resource)[:200]}`")
+        if finding.get('summary'):
+            parts.append(finding['summary'])
+        parts.append("\n**Why this matters:**")
+        parts.append("Slow pages make users leave. Pages over ~3s load or ~3MB lose mobile users first.")
+
+    elif category == 'api_issues':
+        parts.append("**What's wrong:**")
+        parts.append(finding.get('summary') or finding.get('issue', ''))
+        if finding.get('url'):
+            parts.append(f"Endpoint: `{finding['url'][:300]}`")
+        parts.append("\n**Why this matters:**")
+        parts.append("The page could not load its data, so users see missing content or broken features.")
+
+    elif category == 'validation_issues':
+        parts.append("**What's wrong:**")
+        parts.append(finding.get('summary') or finding.get('issue', ''))
+        parts.append("\n**Why this matters:**")
+        parts.append("Users can submit incomplete forms, which creates bad data and confusing errors later.")
+
+    elif category == 'functional_issues':
+        parts.append("**What's wrong:**")
+        parts.append(finding.get('issue') or finding.get('display') or 'A workflow step failed')
+        if finding.get('step'):
+            parts.append(f"Failed step: `{str(finding['step'])[:300]}`")
+        parts.append("\n**Why this matters:**")
+        parts.append("A core user workflow does not complete — this is the most severe kind of defect.")
+
     else:
         parts.append(finding.get('display') or 'Issue detected')
 
@@ -537,6 +602,9 @@ def _smart_description_for_finding(category, finding):
         'mobile_issues': 'Update the CSS or component styles for the elements listed in this finding.',
         'api_issues': 'Fix the frontend API call or the backend endpoint serving the request URL.',
         'validation_issues': 'Update the form control or validation handler identified by this finding.',
+        'performance_issues': 'Compress images, split large JS bundles, and lazy-load below-the-fold content.',
+        'functional_issues': 'Fix the failing workflow step in the app, then re-run the test.',
+        'execution_errors': 'Re-run the audit; if it repeats, check login session and page load stability.',
     }
     if category != 'console_errors':
         parts.append("\n**Where to change:**")
@@ -570,7 +638,8 @@ def _category_severity_map(category, finding=None):
         if isinstance(finding, dict) and finding.get('count', 0) > 10:
             return 'Major'
         return 'Minor'
-    if category in ('api_issues', 'validation_issues', 'execution_errors'):
+    if category in ('api_issues', 'validation_issues', 'execution_errors',
+                      'functional_issues', 'performance_issues'):
         return 'Major'
     return 'Minor'
 
@@ -584,9 +653,11 @@ def _category_db_value(category):
         'security_issues': 'security',
         'accessibility_issues': 'accessibility',
         'mobile_issues': 'mobile',
-        'api_issues': 'other',
-        'validation_issues': 'other',
-        'execution_errors': 'other',
+        'performance_issues': 'performance',
+        'functional_issues': 'functional',
+        'api_issues': 'api',
+        'validation_issues': 'validation',
+        'execution_errors': 'execution',
     }.get(category, 'other')
 
 
@@ -623,6 +694,22 @@ def _build_bug_from_finding(category, finding):
         steps = "1. Visit the page\n2. Open browser DevTools > Network tab\n3. Click the main HTML response\n4. Look at Response Headers"
         expected = "All recommended security headers should be present"
         actual = finding.get('issue', '')
+    elif category == 'performance_issues':
+        steps = "1. Open the page on a throttled (Slow 4G) connection\n2. Measure load time and total weight in DevTools > Network"
+        expected = "Page loads in under 3s and weighs under 3MB"
+        actual = finding.get('display', '')
+    elif category == 'api_issues':
+        steps = f"1. Open the page\n2. Open DevTools > Network\n3. Replay the request to `{finding.get('url', '')[:200]}`"
+        expected = "API returns HTTP 2xx with the expected data"
+        actual = finding.get('issue', '')
+    elif category == 'validation_issues':
+        steps = "1. Open the page\n2. Leave all required fields empty\n3. Submit the form"
+        expected = "Form blocks submission and highlights the missing fields"
+        actual = finding.get('issue', '')
+    elif category == 'functional_issues':
+        steps = "1. Follow the test case steps in order\n2. Observe where the workflow stops matching the expected result"
+        expected = "Each workflow step completes as described in the test case"
+        actual = finding.get('issue') or finding.get('display', '')
 
     return (title, description, severity, cat_db, evidence, steps, expected, actual)
 
@@ -652,20 +739,55 @@ MANUAL_BOOKKEEPING_KEYS = {
 
 # Manual runs keep the tester's own findings under 'reported', already
 # carrying the category and severity the tester chose.
+# Aligned with _category_severity_map: moderate/minor -> Minor.
 TESTER_SEVERITY_TO_BUG = {
     'critical': 'Critical', 'serious': 'Major',
-    'moderate': 'Major', 'minor': 'Minor',
+    'moderate': 'Minor', 'minor': 'Minor',
 }
 
 TESTER_CATEGORY_TO_DB = {
     'broken-link': 'broken-link',
-    'functional': 'other',
+    'functional': 'functional',
     'layout': 'other',
     'design': 'other',
     'content': 'other',
     'business': 'other',
     'other': 'other',
 }
+
+LEGACY_FINDING_COLUMNS = (
+    'broken_links', 'console_errors', 'missing_alt_images',
+    'seo_issues', 'security_issues', 'accessibility_issues',
+    'mobile_issues', 'performance_issues', 'api_issues',
+    'validation_issues',
+)
+
+
+def _load_run_findings(run):
+    """Return the run's findings as {category: [findings]}.
+
+    Prefers the rich findings_evidence JSON; falls back to legacy
+    per-category columns so old runs still convert to bugs.
+    """
+    if run.get('findings_evidence'):
+        try:
+            parsed = json.loads(run['findings_evidence'])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception as e:
+            logger.warning("[from-test-run] Failed to parse findings_evidence: %s", e)
+    logger.info("[from-test-run] No rich findings, using legacy fields")
+    fallback = {}
+    for col in LEGACY_FINDING_COLUMNS:
+        raw = run.get(col)
+        if not raw:
+            fallback[col] = []
+            continue
+        try:
+            fallback[col] = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            fallback[col] = []
+    return fallback
 
 
 def _insert_finding_bug(cursor, title, description, severity, cat_db,
@@ -706,30 +828,8 @@ def create_bugs_from_run(run_id):
         )
         existing_titles = {row['title'] for row in cursor.fetchall()}
 
-        # Use rich findings_evidence
-        rich_findings = None
-        if run.get('findings_evidence'):
-            try:
-                rich_findings = json.loads(run['findings_evidence'])
-            except Exception as e:
-                print(f"[from-test-run] Failed to parse findings_evidence: {e}")
-                rich_findings = None
-
-        # Fallback to legacy columns
-        if not rich_findings:
-            print("[from-test-run] No rich findings, using legacy fields")
-            rich_findings = {}
-            for legacy_col in ['broken_links', 'console_errors', 'missing_alt_images',
-                                'seo_issues', 'security_issues', 'accessibility_issues',
-                                'mobile_issues']:
-                raw = run.get(legacy_col)
-                if raw:
-                    try:
-                        rich_findings[legacy_col] = json.loads(raw)
-                    except Exception:
-                        rich_findings[legacy_col] = []
-                else:
-                    rich_findings[legacy_col] = []
+        # Use rich findings_evidence, falling back to legacy columns.
+        rich_findings = _load_run_findings(run)
 
         created = 0
         skipped = 0
@@ -806,7 +906,7 @@ def create_bugs_from_run(run_id):
                     )
                     created += 1
                 except Exception as e:
-                    print(f"[from-test-run] Failed to create bug for {category}: {e}")
+                    logger.warning("[from-test-run] Failed to create bug for %s: %s", category, e)
                     continue
 
         mysql.connection.commit()
@@ -820,5 +920,5 @@ def create_bugs_from_run(run_id):
         }), 201
 
     except Exception as e:
-        print(f"[from-test-run] Top-level error: {e}")
+        logger.exception("[from-test-run] Top-level error: %s", e)
         return jsonify({'error': str(e)}), 500

@@ -1,12 +1,6 @@
-import axios from 'axios';
+import axios, { getAuthHeader } from './axiosConfig';
 
 const API_URL = '/admin';
-
-const getAuthHeader = () => ({
-  headers: {
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  },
-});
 
 /**
  * Is the signed-in account an administrator?
