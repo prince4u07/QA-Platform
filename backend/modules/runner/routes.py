@@ -445,6 +445,58 @@ def check_broken_links(page, base_url):
     return findings, coverage
 
 
+# ============================================================
+# USER-FRIENDLY ISSUE GUIDANCE
+# One place that explains every finding in plain language:
+# what it means for the user and exactly where to fix it.
+# The runner attaches `summary` + `fix` to key findings so the
+# UI can show a clear message without guessing per category.
+# ============================================================
+
+# Category display names shown in the UI (instead of snake_case keys).
+CATEGORY_LABELS = {
+    'functional_issues': 'Feature not working',
+    'broken_links': 'Broken link',
+    'console_errors': 'Page error (JavaScript)',
+    'missing_alt_images': 'Image missing description',
+    'seo_issues': 'Search / tab appearance',
+    'security_issues': 'Security header',
+    'accessibility_issues': 'Accessibility',
+    'mobile_issues': 'Mobile usability',
+    'performance_issues': 'Slow / heavy page',
+    'api_issues': 'Failed data request',
+    'validation_issues': 'Form validation',
+    'execution_errors': 'Audit could not finish',
+}
+
+# Where to fix each category (shown as "Where to change").
+CATEGORY_FIX_GUIDANCE = {
+    'broken_links': 'Update the link address in the page, or restore the missing destination page.',
+    'console_errors': 'Open browser DevTools > Console on the listed page and fix the file/line shown.',
+    'missing_alt_images': 'Add descriptive alt text to the image in the page template or component.',
+    'seo_issues': 'Update the <head> section of the page template (title / meta description / headings).',
+    'security_issues': 'Update the web server, reverse proxy, or app security-header configuration.',
+    'accessibility_issues': 'Update the HTML element shown in "Technical location" to meet the stated rule.',
+    'mobile_issues': 'Update the CSS or component styles so tap targets are at least 44x44px.',
+    'performance_issues': 'Compress images, split large bundles, and lazy-load below-the-fold resources.',
+    'functional_issues': 'Fix the workflow step described, then re-run the test.',
+    'api_issues': 'Fix the frontend request URL or the backend endpoint that serves it.',
+    'validation_issues': 'Add required-field validation to the form control or its submit handler.',
+    'execution_errors': 'Re-run the audit; if it persists, check the page loads without login expiry.',
+}
+
+
+def category_label(category):
+    """Human-readable name for a finding category (falls back to the key)."""
+    return CATEGORY_LABELS.get(category, category.replace('_', ' ').capitalize())
+
+
+def category_fix(category):
+    """Actionable next step for a finding category."""
+    return CATEGORY_FIX_GUIDANCE.get(
+        category, 'Open the page and update the code at the technical location shown.')
+
+
 # Below this an image is a spacer, tracking pixel or tiny icon, where asking
 # for alt text is noise. At or above it the image carries meaning a screen
 # reader user would otherwise lose.
@@ -468,17 +520,21 @@ def check_missing_alt(page):
                     continue
                 if (img.get_attribute('aria-hidden') or '') == 'true':
                     continue
-                box = img.bounding_box()
+                # Single bounding-box read: also filters out spacers/icons.
+                box = _safe_get_bounding_box(img)
                 if (not box or box['width'] < ALT_MIN_SIZE_PX
                         or box['height'] < ALT_MIN_SIZE_PX):
                     continue
+                img_name = (src.rsplit('/', 1)[-1].split('?')[0] or 'image')[:60]
                 findings.append({
                     'src': src[:200],
                     'severity': 'minor',
                     'element_selector': _safe_get_selector(img),
                     'parent_context': _safe_get_parent_text(img),
-                    'bounding_box': _safe_get_bounding_box(img),
+                    'bounding_box': box,
                     'display': src[:200],
+                    'summary': f'Image "{img_name}" has no text description for screen readers.',
+                    'fix': category_fix('missing_alt_images'),
                 })
             except Exception:
                 continue
@@ -1065,8 +1121,27 @@ def filter_console_errors(console_messages):
     return filtered
 
 
+API_STATUS_MEANINGS = {
+    400: 'the request was malformed (check query params / request body)',
+    401: 'sign-in is required or the session expired',
+    403: 'the logged-in user is not allowed to access it',
+    404: 'the endpoint path does not exist on the server',
+    409: 'the request conflicted with current data (e.g. duplicate entry)',
+    422: 'the server rejected the data as invalid (check field formats)',
+    429: 'the app sent too many requests too quickly (rate limited)',
+    500: 'the server crashed while handling it (check backend logs)',
+    502: 'a gateway/proxy in front of the app is failing',
+    503: 'the backend service is temporarily unavailable',
+    504: 'the backend timed out before responding',
+}
+
+
 def check_api_responses(api_responses):
-    """Turn failed API/XHR responses observed during the page visit into findings."""
+    """Turn failed API/XHR responses observed during the page visit into findings.
+
+    Each finding names the exact endpoint, what the status most likely means,
+    and where to look (frontend call vs backend route).
+    """
     findings = []
     seen = set()
     for response in api_responses or []:
@@ -1075,19 +1150,30 @@ def check_api_responses(api_responses):
         if status < 400 or not url or url in seen:
             continue
         seen.add(url)
+        path = urlparse(url).path or url
+        short_path = path[:120]
+        meaning = API_STATUS_MEANINGS.get(
+            status, 'the server returned an error for this request')
         findings.append({
-            'issue': f'API request returned HTTP {status}',
+            'issue': f'API request to "{short_path}" failed with HTTP {status} ({meaning})',
             'severity': 'critical' if status >= 500 else 'serious',
             'status': status,
             'url': url,
             'element_selector': 'network',
             'display': f'API request failed ({status}): {url}',
+            'summary': f'Data request to "{short_path}" failed — {meaning}.',
+            'fix': category_fix('api_issues'),
         })
     return findings
 
 
 def check_form_validation(page):
-    """Find forms whose native required-field validation does not work."""
+    """Find forms whose native required-field validation does not work.
+
+    Each finding names which form (by index + id/name when available) and
+    how many required fields were tested, so the user knows exactly where
+    to add validation.
+    """
     try:
         form_results = page.evaluate("""() => Array.from(document.forms).map((form, index) => {
             const controls = Array.from(form.querySelectorAll('input, select, textarea'))
@@ -1106,20 +1192,30 @@ def check_form_validation(page):
                 control.checked = originalChecked;
                 return invalid;
             });
-            return { index, required: required.length, invalidRequired: invalidRequired.length };
+            return { index, id: form.id || null, name: form.name || null,
+                     required: required.length, invalidRequired: invalidRequired.length };
         })""")
     except Exception as e:
         logger.warning("form validation check error: %s", e)
         return []
 
-    return [{
-        'issue': f"Form {result['index'] + 1} required fields are not invalid when empty",
-        'severity': 'serious',
-        'form_index': result['index'],
-        'element_selector': 'form',
-        'display': f"Form {result['index'] + 1} does not reject empty required fields",
-    } for result in form_results
-        if result['required'] and not result['invalidRequired']]
+    findings = []
+    for result in form_results or []:
+        if result.get('required') and not result.get('invalidRequired'):
+            form_ref = result.get('id') or result.get('name') or f"form #{result['index'] + 1}"
+            count = result['required']
+            findings.append({
+                'issue': f'"{form_ref}" accepts empty submission ({count} required field(s) not validated)',
+                'severity': 'serious',
+                'form_index': result['index'],
+                'form_id': result.get('id'),
+                'required_count': count,
+                'element_selector': f"form#{result.get('id')}" if result.get('id') else 'form',
+                'display': f'"{form_ref}" does not reject empty required fields ({count} unchecked)',
+                'summary': f'Form "{form_ref}" lets users submit with {count} required field(s) empty.',
+                'fix': category_fix('validation_issues'),
+            })
+    return findings
 
 
 # ============================================================
@@ -1250,11 +1346,13 @@ def measured_categories(step_summary=None, mobile_checked=True,
     marks for them anyway, and a run where no step ever executed banked the
     whole functional weight, the largest of the nine.
 
-    Mobile counts as measured unless the crawl skipped it. Functional counts
+    Mobile counts as measured only when the crawl ran it. Functional counts
     only once at least one step actually executed, because steps the runner
     could not read never ran and so verify nothing about the site.
     """
     measured = set(CATEGORY_WEIGHT)
+    if not mobile_checked:
+        measured.discard('mobile_issues')
     # When axe-core could not run, the fallback finds far less, so the run
     # produced fewer findings and the score went UP because a tool broke.
     if not accessibility_measured:
@@ -1300,6 +1398,7 @@ def summarise_coverage(all_pages_coverage):
     links_found = links_checked = 0
     links_truncated = False
     fallback_pages = 0
+    mobile_skipped_pages = 0
     page_size_total = 0
     page_size_max = 0
     request_total = 0
@@ -1328,7 +1427,15 @@ def summarise_coverage(all_pages_coverage):
         if cov.get('accessibility_engine') == 'heuristic-fallback':
             fallback_pages += 1
 
+        if cov.get('mobile_skipped_reason'):
+            mobile_skipped_pages += 1
+
     notes = []
+    if mobile_skipped_pages:
+        notes.append(
+            f'Mobile checks were skipped on {mobile_skipped_pages} page(s), '
+            f'so mobile usability is unmeasured there rather than clean.'
+        )
     if links_truncated:
         notes.append(
             f'Only {links_checked} of {links_found} links were tested. '
@@ -1365,6 +1472,8 @@ def summarise_coverage(all_pages_coverage):
         'links_checked': links_checked,
         'audit_errors': audit_errors,
         'accessibility_fallback_pages': fallback_pages,
+        'mobile_skipped_pages': mobile_skipped_pages,
+        'mobile_skipped': mobile_skipped_pages > 0,
         # Real measured page weight. This used to be reported as 0 on every run.
         'page_size_kb_total': page_size_total,
         'page_size_kb_heaviest': page_size_max,
@@ -1649,7 +1758,7 @@ def build_crawl_queue(base_url, landing_url=None, session_used=False):
 
 
 def test_single_page(page, page_url, response_headers, console_messages,
-                     is_mobile=True, page_load_ms=0, api_responses=None):
+                     page_load_ms=0, api_responses=None, is_mobile=False):
     """
     Run every check against one loaded page.
 
@@ -1657,6 +1766,12 @@ def test_single_page(page, page_url, response_headers, console_messages,
     capped or skipped so the report can say so out loud instead of letting
     a partial check look like a clean bill of health, and carries the real
     performance metrics for this page.
+
+    Mobile tap-target auditing lives in check_mobile() and is currently
+    disabled for automated runs (desktop workflow focus). The
+    'mobile_issues' category is kept empty with an explicit skipped reason
+    so history stays comparable instead of silently disappearing.
+    `is_mobile` is accepted for backward compatibility and ignored.
     """
     broken_links, link_coverage = check_broken_links(page, page_url)
     missing_alt = check_missing_alt(page)
@@ -1664,10 +1779,9 @@ def test_single_page(page, page_url, response_headers, console_messages,
     security_issues = check_security(page_url, response_headers)
     accessibility_issues, a11y_engine = check_accessibility(page)
 
-    # Mobile auditing is disabled to keep automated runs focused on the core
-    # desktop workflow and issue checks.
+    # Mobile auditing is disabled for automated runs (see docstring).
     mobile_issues, mobile_coverage = [], {}
-    mobile_skipped_reason = None
+    mobile_skipped_reason = 'disabled: automated runs focus on desktop workflow'
 
     performance_issues, perf_metrics = check_performance(page, page_load_ms)
     api_issues = check_api_responses(api_responses)
@@ -2527,7 +2641,7 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
 
                     page_findings, page_coverage = test_single_page(
                         page, page_url, response_headers,
-                        console_messages, is_mobile=not session_used,
+                        console_messages,
                         page_load_ms=page_load_ms,
                         api_responses=api_responses)
                     if page_idx == 0:

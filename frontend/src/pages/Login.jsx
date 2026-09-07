@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Mail, Lock, Eye, EyeOff, LogIn, AlertCircle, Loader2, ShieldCheck } from 'lucide-react';
 import axios from '../api/axiosConfig';
@@ -32,7 +32,7 @@ const Login = () => {
       });
       localStorage.setItem('token', response.data.access_token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
-      navigate('/dashboard');
+      const next = sessionStorage.getItem('redirectAfterLogin'); sessionStorage.removeItem('redirectAfterLogin'); navigate(next ? next : '/dashboard');
     } catch (err) {
       const data = err.response?.data || {};
       const field = data.field;
@@ -113,7 +113,7 @@ const Login = () => {
               <p className="text-red-400 text-sm mt-1.5 flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" /> {errors.email}
                 {errors.email.includes('No account') && (
-                  <a href="/register" className="ml-1 underline font-medium text-brand-sky">Register</a>
+                  <Link to="/register" className="ml-1 underline font-medium text-brand-sky">Register</Link>
                 )}
               </p>
             ) : email && !isEmailValid ? (
@@ -157,11 +157,7 @@ const Login = () => {
                 <AlertCircle className="w-3.5 h-3.5" /> {errors.password}
               </p>
             )}
-            <div className="text-right mt-2">
-              <a href="/forgot-password" className="text-sm text-slate-400 hover:text-brand-sky transition">
-                Forgot password?
-              </a>
-            </div>
+            
           </div>
 
           {/* Submit */}
@@ -183,7 +179,7 @@ const Login = () => {
             ) : (
               <>
                 <LogIn className="w-5 h-5" />
-                {isValid ? 'Login' : 'Fill in your credentials'}
+                'Login'
               </>
             )}
           </motion.button>
@@ -191,7 +187,7 @@ const Login = () => {
 
         <p className="mt-6 text-center text-slate-400 text-sm">
           Don&apos;t have an account?{' '}
-          <a href="/register" className="text-brand-sky hover:underline font-medium">Register</a>
+          <Link to="/register" className="text-brand-sky hover:underline font-medium">Register</Link>
         </p>
       </motion.div>
     </div>

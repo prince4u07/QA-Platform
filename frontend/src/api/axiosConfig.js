@@ -1,42 +1,54 @@
 import axios from 'axios';
 
-// Set default base URL for all API calls
-axios.defaults.baseURL = 'http://127.0.0.1:5000/api';
-console.log('✓ Axios baseURL configured:', axios.defaults.baseURL);
+// Base URL for the API. Overridable via VITE_API_URL for non-local deploys.
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
+axios.defaults.baseURL = API_BASE_URL;
 
-// Global axios setup: intercepts all responses
-// If any API call returns 401 (token expired/invalid), 
-// clear storage and redirect to login automatically.
+// Server origin (no /api suffix) for resolving screenshot / evidence paths.
+export const apiOrigin = () => API_BASE_URL.replace(/\/api\/?$/, '');
 
+// Join a backend static path (e.g. "/static/uploads/...") onto the server origin.
+export const imgUrl = (path) => {
+  if (!path) return '';
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${apiOrigin()}${path.startsWith('/') ? path : `/${path}`}`;
+};
+
+// Single shared auth header builder (replaces 6+ copies across api/ modules).
+// Prefer the request interceptor below; this is kept for explicit calls.
+export const getAuthHeader = () => ({
+  headers: {
+    Authorization: `Bearer ${localStorage.getItem('token')}`,
+  },
+});
+
+// Attach the token to every request automatically so callers don't have to.
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token && !config.headers?.Authorization) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Global response handling: on 401 clear auth and redirect to login.
+// Emits a 'qa:session-expired' event instead of window.alert() so the UI
+// can show a non-blocking toast/message.
 axios.interceptors.response.use(
-  // Success — just pass through
   (response) => response,
-
-  // Error — check for auth failures
   (error) => {
-    console.error('API Error:', error.config?.url, error.response?.status);
-    
-    // Token expired or invalid
     if (error.response?.status === 401) {
-      // Clear any auth data
       localStorage.removeItem('token');
       localStorage.removeItem('user');
 
-      // Don't redirect if already on login/register pages
       const currentPath = window.location.pathname;
       if (currentPath !== '/login' && currentPath !== '/register') {
-        // Save where they were trying to go (optional UX nicety)
         sessionStorage.setItem('redirectAfterLogin', currentPath);
-
-        // Show a brief message before redirect
-        alert('Your session has expired. Please log in again.');
-
-        // Redirect to login
+        window.dispatchEvent(new CustomEvent('qa:session-expired'));
         window.location.href = '/login';
       }
     }
-
-    // Pass the error along so components can still handle other errors
     return Promise.reject(error);
   }
 );
