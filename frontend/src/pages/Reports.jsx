@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import axios from '../api/axiosConfig';
 import {
   getSummary,
   getDetectedIssues,
@@ -73,6 +74,7 @@ const Reports = () => {
   const [passRate, setPassRate] = useState([]);
   const [recentRuns, setRecentRuns] = useState([]);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState('');
   // Bumped by the Refresh button to re-run the report load effect.
   const [reloadFlag, setReloadFlag] = useState(0);
   const reloadReports = () => setReloadFlag((f) => f + 1);
@@ -139,20 +141,13 @@ const Reports = () => {
 
   const handleExportPDF = async () => {
     setExportingPdf(true);
+    setPdfError('');
     try {
-      const baseUrl = 'http://127.0.0.1:5000/api';
-      const response = await fetch(`${baseUrl}/reports/export-pdf`, {
-        headers: {
-          Authorization: 'Bearer ' + localStorage.getItem('token'),
-        },
+      const response = await axios.get('/reports/export-pdf', {
+        responseType: 'blob',
       });
 
-      if (!response.ok) {
-        throw new Error('PDF generation failed');
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
+      const url = window.URL.createObjectURL(response.data);
       const a = document.createElement('a');
       a.href = url;
       a.download = 'qa-platform-report-' + new Date().toISOString().split('T')[0] + '.pdf';
@@ -160,9 +155,8 @@ const Reports = () => {
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-    } catch (err) {
-      alert('Failed to export PDF. Please try again.');
-      console.error('PDF export error:', err);
+    } catch {
+      setPdfError('Could not generate the PDF. Please try again.');
     } finally {
       setExportingPdf(false);
     }
@@ -268,6 +262,11 @@ const Reports = () => {
             </button>
           </div>
         </motion.div>
+        {pdfError && (
+          <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5" role="alert">
+            {pdfError}
+          </p>
+        )}
 
         {hasNoData ? (
           <div className="glass rounded-2xl p-12 text-center">
