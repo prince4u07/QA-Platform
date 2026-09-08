@@ -1,7 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import Tilt from 'react-parallax-tilt';
 import {
   Plus,
   FolderOpen,
@@ -19,7 +17,6 @@ import {
   ChevronRight,
   X,
   Check,
-  FolderPlus,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -211,9 +208,9 @@ const Projects = () => {
   };
 
   const envColor = (env) => {
-    if (env === 'prod') return 'bg-red-500/15 text-red-300 border border-red-500/20';
-    if (env === 'staging') return 'bg-amber-500/15 text-amber-300 border border-amber-500/20';
-    return 'bg-brand-teal/15 text-brand-teal border border-brand-teal/20';
+    if (env === 'prod') return 'bg-red-500/10 text-red-300 border border-red-500/20';
+    if (env === 'staging') return 'bg-amber-500/10 text-amber-300 border border-amber-500/20';
+    return 'bg-white/5 text-slate-300 border border-white/10';
   };
 
   // Format the session captured_at date
@@ -237,99 +234,78 @@ const Projects = () => {
 
   // ----- shared styles -----
   const inputBase =
-    'w-full rounded-xl bg-white/5 border px-4 py-2.5 text-slate-100 placeholder:text-slate-500 ' +
-    'focus:outline-none focus:ring-2 transition';
+    'w-full rounded-md bg-[#0f1419] border border-white/10 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 ' +
+    'focus:outline-none focus:border-[#4c8dff] transition';
   const toggleClass = (active) =>
-    'flex-1 cursor-pointer px-4 py-2.5 border rounded-xl text-center text-sm transition ' +
+    'flex-1 cursor-pointer px-3 py-2 border rounded-md text-center text-sm transition ' +
     (active
-      ? 'border-brand-indigo/60 bg-brand-indigo/15 text-white font-medium'
+      ? 'border-[#4c8dff]/60 bg-[#2f6fed]/15 text-slate-100 font-medium'
       : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/5');
 
   return (
-    <div className="relative flex min-h-screen text-slate-200">
+    <div className="relative flex min-h-screen">
       <AmbientBackground />
       <Sidebar />
 
-      <div className="flex-1 p-8">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
-          className="flex justify-between items-center mb-8 gap-4"
-        >
+      <div className="flex-1 px-6 py-6 max-w-6xl">
+        <div className="flex justify-between items-center mb-6 gap-4">
           <div>
-            <h1 className="text-3xl font-display font-bold text-white">Test Projects</h1>
-            <p className="text-slate-400 mt-1">
-              Register a website and run automated quality audits against it
+            <p className="text-xs text-slate-500 uppercase tracking-wide">Projects</p>
+            <h1 className="text-xl font-semibold text-slate-100 mt-1">Test projects</h1>
+            <p className="text-sm text-slate-500 mt-1">
+              {totalProjects > 0 ? `${totalProjects} total` : 'Register a site to start auditing it'}
             </p>
           </div>
           <button
             onClick={openCreateModal}
-            className="flex items-center gap-2 bg-brand-gradient text-white px-5 py-2.5 rounded-xl font-medium shadow-glow hover:shadow-glow-teal transition-all"
+            className="btn-primary flex items-center gap-2 px-4 py-2 text-sm"
           >
-            <Plus className="w-4 h-4" /> New Project
+            <Plus className="w-4 h-4" /> New project
           </button>
-        </motion.div>
+        </div>
 
         {loading ? (
-          <div className="flex items-center justify-center gap-2 py-20 text-slate-400">
-            <Loader2 className="w-5 h-5 animate-spin" /> Loading projects...
+          <div className="flex items-center justify-center gap-2 py-20 text-slate-500 text-sm">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading projects…
           </div>
         ) : projects.length === 0 ? (
-          <div className="glass rounded-2xl p-12 text-center">
-            <div className="grid place-items-center w-16 h-16 mx-auto rounded-2xl bg-brand-indigo/15 text-brand-indigo mb-4">
-              <FolderOpen className="w-8 h-8" />
+          <div className="card p-10 text-center">
+            <div className="grid place-items-center w-11 h-11 mx-auto rounded-md bg-white/5 border border-white/10 text-slate-400 mb-3">
+              <FolderOpen className="w-5 h-5" />
             </div>
-            <h3 className="text-xl font-display font-semibold text-white mb-2">No projects yet</h3>
-            <p className="text-slate-400 mb-6">
-              Create your first test project to start automating tests
+            <h3 className="text-[15px] font-semibold text-slate-200 mb-1">No projects yet</h3>
+            <p className="text-sm text-slate-500 mb-5">
+              Add your first site to run tests against it.
             </p>
             <button
               onClick={openCreateModal}
-              className="inline-flex items-center gap-2 bg-brand-gradient text-white px-6 py-3 rounded-xl font-medium shadow-glow"
+              className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
             >
-              <Plus className="w-4 h-4" /> Create Your First Project
+              <Plus className="w-4 h-4" /> Create project
             </button>
           </div>
         ) : (
           <div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {projects.map((p, i) => (
-                <motion.div
-                  key={p.id}
-                  initial={{ opacity: 0, y: 14 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.35, delay: Math.min(i * 0.04, 0.3) }}
-                >
-                  <Tilt
-                    tiltMaxAngleX={6}
-                    tiltMaxAngleY={6}
-                    scale={1.02}
-                    transitionSpeed={1200}
-                    glareEnable
-                    glareMaxOpacity={0.08}
-                    glareColor="#6366f1"
-                    glarePosition="all"
-                    glareBorderRadius="1rem"
-                    className="h-full"
-                  >
-                    <div className="glass rounded-2xl p-6 h-full flex flex-col hover:border-brand-indigo/30 transition-colors">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {projects.map((p) => (
+                <div key={p.id} className="h-full">
+                  <div className="card p-5 h-full flex flex-col">
                       <div className="flex justify-between items-start mb-3 gap-2">
-                        <h3 className="text-lg font-display font-bold text-white truncate flex-1">
+                        <h3 className="text-[15px] font-semibold text-slate-100 truncate flex-1">
                           {p.name}
                         </h3>
-                        <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + envColor(p.environment)}>
+                        <span className={'text-[11px] font-medium px-2 py-0.5 rounded ' + envColor(p.environment)}>
                           {p.environment.toUpperCase()}
                         </span>
                       </div>
 
-                      <div className="mb-3 flex flex-wrap gap-2">
+                      <div className="mb-2.5 flex flex-wrap gap-1.5">
                         {p.has_active_session ? (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-teal/15 text-brand-teal">
+                          <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
                             <ShieldCheck className="w-3.5 h-3.5" /> Logged in
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-white/5 text-slate-400">
+                          <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-white/5 text-slate-500 border border-white/10">
                             <Unlock className="w-3.5 h-3.5" /> No session
                           </span>
                         )}
@@ -339,24 +315,24 @@ const Projects = () => {
                         href={p.base_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 text-sm text-brand-sky hover:underline break-all mb-3"
+                        className="inline-flex items-center gap-1.5 text-[13px] text-[#7aa8ff] hover:underline break-all mb-2.5"
                       >
                         <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                         {p.base_url && p.base_url.length > 46 ? p.base_url.substring(0, 46) + '...' : p.base_url}
                       </a>
 
                       {p.description && (
-                        <p className="text-sm text-slate-400 mb-3 line-clamp-2">{p.description}</p>
+                        <p className="text-[13px] text-slate-500 mb-2.5 line-clamp-2">{p.description}</p>
                       )}
 
                       {/* Session info text */}
                       {p.has_active_session && p.session_captured_at ? (
-                        <div className="flex items-center gap-1.5 text-xs text-brand-teal mb-3">
-                          <Lock className="w-3.5 h-3.5" /> Session captured {formatSessionAge(p.session_captured_at)}
+                        <div className="flex items-center gap-1.5 text-xs text-emerald-300/90 mb-2.5">
+                          <Lock className="w-3.5 h-3.5" /> Session saved {formatSessionAge(p.session_captured_at)}
                         </div>
                       ) : !p.has_active_session ? (
-                        <div className="flex items-center gap-1.5 text-xs text-slate-500 mb-3">
-                          <Lightbulb className="w-3.5 h-3.5" /> If site requires login, click below before testing
+                        <div className="flex items-center gap-1.5 text-xs text-slate-500 mb-2.5">
+                          <Lightbulb className="w-3.5 h-3.5" /> Log in first if the site needs auth
                         </div>
                       ) : null}
 
@@ -365,64 +341,63 @@ const Projects = () => {
                           onClick={() => handleOpenLogin(p)}
                           disabled={openingLoginFor === p.id}
                           className={
-                            'w-full flex items-center justify-center gap-2 text-sm py-2 rounded-xl font-medium transition mb-3 ' +
+                            'w-full flex items-center justify-center gap-2 text-[13px] py-2 rounded-md font-medium transition mb-2.5 border ' +
                             (openingLoginFor === p.id
-                              ? 'bg-brand-indigo/20 text-brand-indigo cursor-wait'
+                              ? 'bg-white/5 text-slate-400 border-white/10 cursor-wait'
                               : p.has_active_session
-                                ? 'bg-white/5 hover:bg-white/10 text-brand-sky border border-brand-indigo/30'
-                                : 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal')
+                                ? 'bg-white/5 hover:bg-white/10 text-slate-200 border-white/10'
+                                : 'bg-[#2f6fed] hover:bg-[#3b7bf5] text-white border-transparent')
                           }
                         >
                           {openingLoginFor === p.id ? (
-                            <><Loader2 className="w-4 h-4 animate-spin" /> Opening browser...</>
+                            <><Loader2 className="w-4 h-4 animate-spin" /> Opening browser…</>
                           ) : p.has_active_session ? (
                             <><RefreshCw className="w-4 h-4" /> Re-login</>
                           ) : (
-                            <><KeyRound className="w-4 h-4" /> Open & Login</>
+                            <><KeyRound className="w-4 h-4" /> Open &amp; log in</>
                           )}
                         </button>
 
-                        <div className="flex gap-2 pt-3 border-t border-white/10">
+                        <div className="flex gap-2 pt-2.5 border-t border-white/10">
                           <button
                             onClick={() => openEditModal(p)}
-                            className="flex-1 flex items-center justify-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-200 py-2 rounded-xl transition"
+                            className="flex-1 flex items-center justify-center gap-1.5 text-[13px] bg-transparent hover:bg-white/5 text-slate-300 border border-white/10 py-1.5 rounded-md transition"
                           >
                             <Pencil className="w-3.5 h-3.5" /> Edit
                           </button>
                           <button
                             onClick={() => handleDelete(p.id, p.name)}
-                            className="flex-1 flex items-center justify-center gap-1.5 text-sm bg-red-500/10 hover:bg-red-500/20 text-red-300 py-2 rounded-xl transition"
+                            className="flex-1 flex items-center justify-center gap-1.5 text-[13px] bg-transparent hover:bg-red-500/10 text-slate-400 hover:text-red-300 border border-white/10 hover:border-red-500/25 py-1.5 rounded-md transition"
                           >
                             <Trash2 className="w-3.5 h-3.5" /> Delete
                           </button>
                         </div>
                       </div>
                     </div>
-                  </Tilt>
-                </motion.div>
+                  </div>
               ))}
             </div>
 
             {/* Pagination Controls */}
             {totalPages > 1 && (
-              <div className="flex justify-center items-center gap-2 mt-8 flex-wrap">
+              <div className="flex items-center gap-1.5 mt-6 flex-wrap">
                 <button
                   onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
                   disabled={currentPage === 1}
-                  className="flex items-center gap-1 px-4 py-2 glass rounded-xl hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                  className="btn-ghost flex items-center gap-1 px-3 py-1.5 text-[13px] disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <ChevronLeft className="w-4 h-4" /> Previous
+                  <ChevronLeft className="w-4 h-4" /> Prev
                 </button>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1">
                   {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
                     <button
                       key={page}
                       onClick={() => setCurrentPage(page)}
                       className={
-                        'w-9 h-9 rounded-lg text-sm transition ' +
+                        'w-8 h-8 rounded-md text-[13px] transition border ' +
                         (currentPage === page
-                          ? 'bg-brand-gradient text-white font-semibold shadow-glow'
-                          : 'glass hover:bg-white/10 text-slate-300')
+                          ? 'bg-[#2f6fed] text-white border-transparent font-medium'
+                          : 'bg-transparent hover:bg-white/5 text-slate-400 border-white/10')
                       }
                     >
                       {page}
@@ -432,11 +407,11 @@ const Projects = () => {
                 <button
                   onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
                   disabled={currentPage === totalPages}
-                  className="flex items-center gap-1 px-4 py-2 glass rounded-xl hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                  className="btn-ghost flex items-center gap-1 px-3 py-1.5 text-[13px] disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Next <ChevronRight className="w-4 h-4" />
                 </button>
-                <span className="ml-3 text-sm text-slate-500">
+                <span className="ml-2 text-[13px] text-slate-500">
                   Page {currentPage} of {totalPages} ({totalProjects} total)
                 </span>
               </div>
@@ -447,26 +422,16 @@ const Projects = () => {
 
       {/* CREATE / EDIT MODAL */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.97, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="glass-strong rounded-2xl shadow-card w-full max-w-lg max-h-screen overflow-y-auto"
-          >
-            <div className="p-6 border-b border-white/10 flex items-start justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="grid place-items-center w-10 h-10 rounded-xl bg-brand-gradient shadow-glow">
-                  <FolderPlus className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h2 className="text-xl font-display font-bold text-white">
-                    {editingId ? 'Edit Project' : 'Create New Test Project'}
-                  </h2>
-                  <p className="text-sm text-slate-400">
-                    Enter the website details. You&apos;ll log in manually after creation.
-                  </p>
-                </div>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="card w-full max-w-lg max-h-screen overflow-y-auto">
+            <div className="px-5 py-4 border-b border-white/10 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-[15px] font-semibold text-slate-100">
+                  {editingId ? 'Edit project' : 'New project'}
+                </h2>
+                <p className="text-[13px] text-slate-500 mt-0.5">
+                  Site details. You can save a login session afterwards.
+                </p>
               </div>
               <button
                 type="button"
@@ -474,72 +439,68 @@ const Projects = () => {
                 className="text-slate-500 hover:text-slate-200 transition"
                 aria-label="Close"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
+            <form onSubmit={handleSubmit} className="p-5 space-y-4">
               {error && (
-                <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-2.5 rounded-xl text-sm">
+                <div className="bg-red-500/10 border border-red-500/25 text-red-300 px-3 py-2 rounded-md text-[13px]">
                   {error}
                 </div>
               )}
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Project Name *</label>
+                <label className="block text-slate-300 text-[13px] font-medium mb-1">Name *</label>
                 <input
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="My Portfolio Site"
+                  placeholder="e.g. Marketing site"
                   className={`${inputBase} ${
-                    name && isNameValid
-                      ? 'border-brand-teal/60 focus:ring-brand-teal/50'
-                      : name
-                      ? 'border-red-500/60 focus:ring-red-500/50'
-                      : 'border-white/10 focus:ring-brand-sky/60'
+                    name && !isNameValid
+                      ? 'border-red-500/50'
+                      : 'border-white/10'
                   }`}
                 />
                 {name && !isNameValid && (
-                  <p className="text-red-400 text-xs mt-1">Name must be at least 3 characters</p>
+                  <p className="text-red-400 text-xs mt-1">At least 3 characters.</p>
                 )}
               </div>
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Target Website URL *</label>
+                <label className="block text-slate-300 text-[13px] font-medium mb-1">URL *</label>
                 <input
                   type="text"
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   placeholder="https://example.com"
                   className={`${inputBase} ${
-                    baseUrl && isUrlValid
-                      ? 'border-brand-teal/60 focus:ring-brand-teal/50'
-                      : baseUrl
-                      ? 'border-red-500/60 focus:ring-red-500/50'
-                      : 'border-white/10 focus:ring-brand-sky/60'
+                    baseUrl && !isUrlValid
+                      ? 'border-red-500/50'
+                      : 'border-white/10'
                   }`}
                 />
-                <p className="text-xs text-slate-500 mt-1">Tests will run against this URL</p>
+                <p className="text-xs text-slate-500 mt-1">Test runs target this address.</p>
                 {baseUrl && !isUrlValid && (
                   <p className="text-red-400 text-xs mt-1">Must start with http:// or https://</p>
                 )}
               </div>
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Description</label>
+                <label className="block text-slate-300 text-[13px] font-medium mb-1">Description</label>
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="What does this project test?"
+                  placeholder="Optional note about what this covers"
                   rows="2"
-                  className={`${inputBase} border-white/10 focus:ring-brand-sky/60`}
+                  className={inputBase}
                 />
               </div>
 
               <div>
-                <label className="block text-slate-300 text-sm font-medium mb-1.5">Environment</label>
-                <div className="flex gap-3">
+                <label className="block text-slate-300 text-[13px] font-medium mb-1">Environment</label>
+                <div className="flex gap-2">
                   {['dev', 'staging', 'prod'].map((env) => (
                     <label key={env} className={toggleClass(environment === env) + ' capitalize'}>
                       <input
@@ -555,83 +516,71 @@ const Projects = () => {
                 </div>
               </div>
 
-              {/* Info banner about manual login */}
               {!editingId && (
-                <div className="bg-brand-indigo/10 border border-brand-indigo/30 rounded-xl p-3 text-sm">
-                  <p className="font-medium text-white flex items-center gap-2">
-                    <Lightbulb className="w-4 h-4 text-brand-sky" /> About Login
+                <div className="bg-white/[0.02] border border-white/10 rounded-md p-3 text-[13px]">
+                  <p className="font-medium text-slate-200 flex items-center gap-1.5">
+                    <Lightbulb className="w-4 h-4 text-slate-400" /> Login sessions
                   </p>
-                  <p className="text-xs text-slate-300 mt-1">
-                    If your site needs login, after creating the project click
-                    <strong className="text-brand-sky"> Open &amp; Login</strong> on the project card. A browser
-                    will open where you can log in manually (OTP, captcha, anything works).
-                    Your session is saved for testing.
+                  <p className="text-slate-500 mt-1 text-xs leading-relaxed">
+                    After creating the project, use “Open &amp; log in” on the card if the
+                    site needs auth. A browser opens, you sign in, and the session is kept
+                    for test runs.
                   </p>
                 </div>
               )}
 
-              <div className="flex gap-3 pt-4 border-t border-white/10">
+              <div className="flex gap-2 pt-3 border-t border-white/10">
                 <button
                   type="button"
                   onClick={closeModal}
                   disabled={saving}
-                  className="flex-1 bg-white/5 hover:bg-white/10 text-slate-200 py-3 rounded-xl font-medium transition disabled:opacity-50"
+                  className="btn-ghost flex-1 py-2 text-sm disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={!canSubmit()}
-                  className={
-                    'flex-1 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 ' +
-                    (canSubmit()
-                      ? 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal'
-                      : 'bg-white/5 text-slate-500 border border-white/10 cursor-not-allowed')
-                  }
+                  className="btn-primary flex-1 py-2 text-sm flex items-center justify-center gap-2"
                 >
                   {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-                  {saving ? 'Saving...' : editingId ? 'Update Project' : 'Create Project'}
+                  {saving ? 'Saving…' : editingId ? 'Save changes' : 'Create project'}
                 </button>
               </div>
             </form>
-          </motion.div>
+          </div>
         </div>
       )}
 
       {/* MANUAL LOGIN PROMPT */}
       {loginProject && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.97, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="glass-strong rounded-2xl shadow-card w-full max-w-md"
-          >
-            <div className="p-6 border-b border-white/10">
-              <h2 className="text-xl font-display font-bold text-white flex items-center gap-2">
-                <KeyRound className="w-5 h-5 text-brand-sky" /> Log in to {loginProject.name}
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+          <div className="card w-full max-w-md">
+            <div className="px-5 py-4 border-b border-white/10">
+              <h2 className="text-[15px] font-semibold text-slate-100 flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-slate-400" /> Log in to {loginProject.name}
               </h2>
             </div>
 
-            <div className="p-6 space-y-4">
-              <div className="bg-brand-indigo/10 border border-brand-indigo/30 rounded-xl p-4 text-sm text-slate-200">
-                A Chromium window has opened at{' '}
-                <span className="font-mono text-brand-sky break-all">{loginProject.base_url}</span>.
-                <ol className="list-decimal list-inside mt-2 space-y-1 text-slate-300">
-                  <li>Log in there manually (email, OTP, captcha — anything works).</li>
-                  <li>Come back here and click <strong className="text-white">“I’m logged in”</strong> to save the session.</li>
+            <div className="p-5 space-y-3">
+              <div className="bg-white/[0.02] border border-white/10 rounded-md p-3.5 text-[13px] text-slate-300">
+                A browser window opened at{' '}
+                <span className="font-mono text-[12px] break-all">{loginProject.base_url}</span>.
+                <ol className="list-decimal list-inside mt-2 space-y-1 text-slate-400">
+                  <li>Sign in there (SSO, OTP, captcha — whatever it uses).</li>
+                  <li>Come back here and confirm to save the session.</li>
                 </ol>
               </div>
               <p className="text-xs text-slate-500">
-                The window auto-closes after 10 minutes if you don’t finish.
+                The window closes on its own after 10 minutes.
               </p>
 
-              <div className="flex gap-3 pt-2">
+              <div className="flex gap-2 pt-1">
                 <button
                   type="button"
                   onClick={handleCancelLogin}
                   disabled={savingSession}
-                  className="flex-1 bg-white/5 hover:bg-white/10 text-slate-200 py-3 rounded-xl font-medium transition disabled:opacity-50"
+                  className="btn-ghost flex-1 py-2 text-sm disabled:opacity-50"
                 >
                   Cancel
                 </button>
@@ -639,12 +588,7 @@ const Projects = () => {
                   type="button"
                   onClick={handleSaveSession}
                   disabled={savingSession}
-                  className={
-                    'flex-1 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2 ' +
-                    (savingSession
-                      ? 'bg-brand-teal/30 text-brand-teal cursor-wait'
-                      : 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal')
-                  }
+                  className="btn-primary flex-1 py-2 text-sm flex items-center justify-center gap-2"
                 >
                   {savingSession ? (
                     <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
@@ -654,7 +598,7 @@ const Projects = () => {
                 </button>
               </div>
             </div>
-          </motion.div>
+          </div>
         </div>
       )}
     </div>

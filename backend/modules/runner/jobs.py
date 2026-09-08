@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 _MAX_JOBS_RETAINED = 200
 
+# A job in one of these states will never change again, so it is safe to
+# evict. Anything else (queued / running) is still live: evicting it makes
+# polls 404 with "Job not found" while the worker is still crawling.
+_FINISHED_STATES = ('done', 'failed', 'cancelled')
+
 
 class JobManager:
     def __init__(self):
@@ -61,7 +66,16 @@ class JobManager:
             self._order.append(job_id)
             self._evict_old_locked()
 
-        self._executor.submit(self._run, job_id, testcase_id, tc)
+        try:
+            self._executor.submit(self._run, job_id, testcase_id, tc)
+        except RuntimeError:
+            # Pool is shut down: drop the entry rather than leaving a job
+            # stuck in 'queued' forever that every poll reports as live.
+            with self._lock:
+                self._jobs.pop(job_id, None)
+                if job_id in self._order:
+                    self._order.remove(job_id)
+            raise
         logger.info("queued run job %s for testcase %s", job_id, testcase_id)
         return job_id
 
@@ -129,9 +143,20 @@ class JobManager:
 
     def _evict_old_locked(self):
         # Caller holds the lock. Drop oldest finished jobs beyond the cap.
+        # Live jobs are never evicted, even past the cap: losing a running
+        # job's record turns its polls into "Job not found" while the crawl
+        # is still going, which is exactly the failure this manager exists
+        # to avoid reporting.
         while len(self._order) > _MAX_JOBS_RETAINED:
-            old = self._order.pop(0)
-            self._jobs.pop(old, None)
+            victim = None
+            for old in self._order:
+                if self._jobs.get(old, {}).get('status') in _FINISHED_STATES:
+                    victim = old
+                    break
+            if victim is None:
+                break
+            self._order.remove(victim)
+            self._jobs.pop(victim, None)
 
 
 job_manager = JobManager()
