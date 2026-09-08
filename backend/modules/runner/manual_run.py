@@ -125,6 +125,35 @@ _active = {}
 _lock = threading.Lock()
 
 
+def _same_url(a, b):
+    """Same page ignoring a trailing slash or fragment."""
+    norm = lambda u: (u or '').rstrip('/').split('#')[0]
+    return norm(a) == norm(b)
+
+
+def should_auto_trigger(current_url, entry_url, navigated, stable_secs,
+                        threshold=None):
+    """
+    Decide whether the manual run may start its auto-crawl on its own.
+
+    The crawl fires only once the tester has actually gone somewhere. The
+    old rule — "off the login page and stable for 5s" — also fired when the
+    run *started* on a page that merely looks public: a login form served
+    at '/' or a custom auth path the login detector does not recognise.
+    That crawled before the tester had logged in. Sitting still on the
+    entry page is never evidence of being logged in; navigating is.
+    """
+    if threshold is None:
+        threshold = AUTO_TRIGGER_STABLE_SECS
+    if _looks_like_login(current_url):
+        return False
+    if stable_secs < threshold:
+        return False
+    if not navigated and _same_url(current_url, entry_url):
+        return False
+    return True
+
+
 class _ManualSession:
     """Owns one headed Chromium window on its own thread until the user clicks Done."""
 
@@ -309,14 +338,18 @@ class _ManualSession:
                 # fire framenavigated). The polling also pumps the Playwright
                 # event loop so we notice if the user closes the window.
                 #
-                # Auto-trigger: once the URL is OFF the login page and has stayed
-                # stable for AUTO_TRIGGER_STABLE_SECS, fire the autocrawl signal
-                # automatically — no button needed.
+                # Auto-trigger: once the tester has navigated off the entry page
+                # onto a non-login URL and it has stayed stable for
+                # AUTO_TRIGGER_STABLE_SECS, fire the autocrawl signal
+                # automatically — no button needed. Idling on the entry page
+                # never triggers: see should_auto_trigger.
                 #
                 # Exits on: Done/Cancel, autocrawl signal (manual or auto),
                 # browser closed, timeout.
                 deadline = time.time() + MAX_DURATION_SECS
                 stable_since = time.time()
+                entry_url = last_url
+                navigated = False
                 while (not self._action_event.is_set()
                        and not self._autocrawl_event.is_set()
                        and time.time() < deadline):
@@ -335,9 +368,10 @@ class _ManualSession:
                         self._capture(page)
                         last_url = current_url
                         stable_since = time.time()       # active navigation resets
+                        navigated = True
 
-                    if (not _looks_like_login(current_url)
-                            and (time.time() - stable_since) >= AUTO_TRIGGER_STABLE_SECS):
+                    if should_auto_trigger(current_url, entry_url, navigated,
+                                           time.time() - stable_since):
                         logger.info("manual-run %s: auto-trigger — '%s' stable for %.1fs",
                                     self.run_id, current_url, AUTO_TRIGGER_STABLE_SECS)
                         self._autocrawl_event.set()
@@ -390,6 +424,19 @@ class _ManualSession:
     def _capture(self, page, source='manual'):
         try:
             url = page.url
+        except Exception as e:
+            logger.warning("manual-run screenshot failed: %s", e)
+            return
+        # Collapse rapid same-page captures (redirect chains, re-renders):
+        # without this each bounce records another "page" and the page count
+        # and auto-check budget are spent on one screen.
+        now = time.monotonic()
+        with self._lock:
+            last_url = self.pages[-1]['url'] if self.pages else None
+            if last_url == url and (now - self._last_capture) < SCREENSHOT_DEBOUNCE_SECS:
+                return
+            self._last_capture = now
+        try:
             idx = len(self.pages) + 1
             filename = f'p{idx:03d}.png'
             filepath = os.path.join(self.run_dir, filename)
@@ -477,7 +524,10 @@ class _ManualSession:
         the entire point of having the user log in manually first.
         """
         # Imported here to avoid a circular import at module load.
-        from modules.runner.routes import discover_internal_links, navigate_spa
+        from modules.runner.routes import (
+            discover_internal_links, navigate_spa,
+            normalize_crawl_url, crawl_pattern, PATTERN_PAGES_CAP,
+        )
 
         try:
             seed = page.url
@@ -486,10 +536,23 @@ class _ManualSession:
         if not seed:
             return
 
-        visited = {p['url'].rstrip('/').split('#')[0] for p in self.pages}
-        seed_clean = seed.rstrip('/').split('#')[0]
+        visited = {normalize_crawl_url(p['url']) for p in self.pages}
+        seed_clean = normalize_crawl_url(seed)
         to_visit = [seed_clean] if seed_clean not in visited else []
         queued = set(to_visit)
+        pattern_counts = {crawl_pattern(seed_clean): 1} if to_visit else {}
+        queued = set(to_visit)
+
+        def _enqueue(link):
+            clean = normalize_crawl_url(link)
+            if not clean or clean in queued or clean in visited:
+                return
+            pat = crawl_pattern(clean)
+            if pattern_counts.get(pat, 0) >= PATTERN_PAGES_CAP:
+                return
+            pattern_counts[pat] = pattern_counts.get(pat, 0) + 1
+            queued.add(clean)
+            to_visit.append(clean)
 
         # Always discover from the CURRENT page first, even if it's already in
         # `visited` (e.g. the user manually navigated to the dashboard and that
@@ -497,10 +560,7 @@ class _ManualSession:
         # starts from a previously-captured page does nothing at all.
         try:
             for link in discover_internal_links(page, seed, self.max_pages):
-                clean = link.rstrip('/').split('#')[0]
-                if clean and clean not in queued and clean not in visited:
-                    queued.add(clean)
-                    to_visit.append(clean)
+                _enqueue(link)
         except Exception as e:
             logger.warning("manual auto-crawl initial discovery failed: %s", e)
 
@@ -530,11 +590,8 @@ class _ManualSession:
                 logger.warning("manual auto-crawl discovery failed: %s", e)
                 discovered = []
             for link in discovered:
-                clean = link.rstrip('/').split('#')[0]
-                if clean and clean not in queued and clean not in visited:
-                    queued.add(clean)
-                    to_visit.append(clean)
-            visited.add(url)
+                _enqueue(link)
+            visited.add(normalize_crawl_url(url))
 
         logger.info("manual-run %s: auto-crawl finished (%d pages total)",
                     self.run_id, len(self.pages))

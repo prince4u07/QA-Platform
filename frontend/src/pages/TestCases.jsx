@@ -691,7 +691,9 @@ const TestCases = () => {
       const result = data.result || {};
       setRunResult({ ...result, testCaseTitle: tc.title });
       setShowResultModal(true);
-      if (result.status) {
+      // A cancelled crawl is not a verdict: leave the test case's status
+      // as it was instead of stamping it 'Cancelled'.
+      if (result.status && result.status !== 'Cancelled') {
         setTestCases((prev) =>
           prev.map((t) => (t.id === tc.id ? { ...t, status: result.status } : t))
         );
