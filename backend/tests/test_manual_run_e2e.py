@@ -103,25 +103,29 @@ def test_session_captures_initial_page_and_finishes_cleanly(monkeypatch, tmp_pat
     assert ok
 
 
-def test_autotrigger_fires_when_url_is_non_login(monkeypatch, tmp_path):
-    """Starting directly at a non-login URL should auto-trigger the crawl after
-    the stability window, no button needed."""
+def test_autotrigger_does_not_fire_before_any_navigation(monkeypatch, tmp_path):
+    """Sitting still on the entry page must not start the crawl, even when the
+    URL looks public: the entry page may be an unrecognised login screen and
+    firing there crawls before the tester has logged in (see
+    should_auto_trigger). The crawl starts after the first navigation."""
     _patch_to_headless(monkeypatch)
     monkeypatch.setattr(mr, 'MANUAL_RUNS_DIR', str(tmp_path / 'manual_runs'))
-    monkeypatch.setattr(mr, 'AUTO_TRIGGER_STABLE_SECS', 2.0)  # shorten for the test
+    monkeypatch.setattr(mr, 'AUTO_TRIGGER_STABLE_SECS', 1.0)  # shorten for the test
 
     ok, _msg, _snap = mr.start(testcase_id=998, project_id=998,
                                base_url='https://example.com', max_pages=2)
     assert ok
 
-    # Reach into the session to verify the autocrawl event fires automatically.
-    # (example.com has no internal links, so the crawl loop itself is a no-op —
-    # the contract under test is that the trigger fires without a button click.)
     with mr._lock:
         sess = mr._active.get(998)
     assert sess is not None
 
-    assert _wait_for(lambda: sess._autocrawl_event.is_set(), timeout=20), \
-        f"auto-trigger never fired (status={mr.status(998)})"
+    assert _wait_for(lambda: mr.status(998).get('status') == 'ready', timeout=30), \
+        f"never reached ready, status={mr.status(998)}"
+
+    # No navigation happened: the trigger must stay quiet past the window.
+    time.sleep(3)
+    assert not sess._autocrawl_event.is_set(), \
+        'auto-trigger fired without the tester navigating anywhere'
 
     mr.cancel(998)
