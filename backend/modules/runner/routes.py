@@ -17,6 +17,7 @@ from urllib.parse import urlparse, urljoin
 from datetime import datetime
 import os
 import json
+import re
 import time
 import uuid
 import logging
@@ -392,13 +393,15 @@ def check_broken_links(page, base_url):
 
     def _severity(url, status, failure=None):
         # A dead link on your own site is worse than a dead link pointing out.
-        # A 5xx means the target is erroring, which is worse still.
-        if status >= 500:
-            return 'critical'
+        # A 5xx means the target is erroring, which is worse still — but only
+        # critical when it is our own server failing. An external site's 500
+        # is not a defect in the thing under test.
         try:
             internal = urlparse(url).netloc == urlparse(base_url).netloc
         except Exception:
             internal = False
+        if status >= 500:
+            return 'critical' if internal else 'serious'
         if status == 0:
             if failure == 'timeout':
                 return 'moderate'      # slow: often not a fault at all
@@ -1578,10 +1581,72 @@ def navigate_spa(page, target_url):
         return 'goto', None
 
 
+def normalize_crawl_url(url):
+    """
+    Canonical form for crawl-queue membership: lowercase host, no fragment,
+    no trailing slash (the site root keeps no slash either, matching the
+    seed queue, so https://site and https://site/ are one page).
+
+    Without this, https://site/Page and https://site/page/ queue as two
+    different pages and the crawl spends its page budget visiting the same
+    content twice.
+    """
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or '').lower()
+        if not host:
+            return url
+        path = parsed.path or ''
+        if path == '/':
+            path = ''
+        elif len(path) > 1:
+            path = path.rstrip('/')
+        clean = f"{parsed.scheme}://{host}{path}"
+        if parsed.query:
+            clean += f"?{parsed.query}"
+        return clean
+    except Exception:
+        return url
+
+
+# A path segment that is an ID rather than a named route: pure digits, a
+# long hex token, a UUID, or a long alphanumeric token containing a digit
+# (product ASINs, database ids, session-ish slugs). Named slugs like
+# "user-login" contain no digit and are left alone.
+_ID_SEGMENT = re.compile(
+    r'^(?:\d+|[0-9a-f]{8,}(?:-[0-9a-f]{4,})*|(?=.*\d)[A-Za-z0-9_-]{8,})$', re.I)
+
+# How many pages sharing one URL pattern a crawl will visit. Listing and
+# product sites otherwise spend the entire page budget on near-duplicate
+# pages (/dp/ASIN1, /dp/ASIN2, ...) and max_pages stops meaning anything.
+PATTERN_PAGES_CAP = int(os.getenv('QA_PATTERN_CAP', '10'))
+
+
+def crawl_pattern(url):
+    """
+    The URL with ID-like path segments collapsed to '*', so near-duplicate
+    pages (/products/849201, /products/849202) count as one pattern.
+    Used to cap how much of the page budget a single listing can consume.
+    """
+    try:
+        parsed = urlparse(url)
+        segs = []
+        for part in (parsed.path or '/').split('/'):
+            if part and _ID_SEGMENT.match(part):
+                segs.append('*')
+            elif part:
+                segs.append(part.lower())
+            else:
+                segs.append(part)
+        return f"{(parsed.netloc or '').lower()}/{'/'.join(segs)}"
+    except Exception:
+        return url
+
+
 def discover_internal_links(page, base_url, max_pages):
     discovered = set()
     base_parsed = urlparse(base_url)
-    base_domain = base_parsed.netloc
+    base_domain = (base_parsed.netloc or '').lower()
 
     try:
         links = page.query_selector_all('a[href]')
@@ -1591,17 +1656,21 @@ def discover_internal_links(page, base_url, max_pages):
                 if not href:
                     continue
                 href = href.strip()
-                if href.startswith(('#', 'javascript:', 'mailto:', 'tel:', 'sms:')):
+                if href.startswith(('#', 'javascript:', 'mailto:', 'tel:', 'sms:',
+                                     'data:', 'blob:')):
                     continue
                 if href.startswith('/'):
-                    full_url = f"{base_parsed.scheme}://{base_domain}{href}"
-                elif href.startswith('http'):
+                    full_url = f"{base_parsed.scheme}://{base_parsed.netloc}{href}"
+                elif re.match(r'^[a-z][a-z0-9+.-]*:', href, re.I) and \
+                        not href.lower().startswith(('http://', 'https://')):
+                    continue                    # some other scheme (ftp:, file:, ...)
+                elif href.lower().startswith(('http://', 'https://')):
                     full_url = href
                 else:
                     full_url = urljoin(base_url, href)
 
                 link_parsed = urlparse(full_url)
-                if link_parsed.netloc != base_domain:
+                if (link_parsed.netloc or '').lower() != base_domain:
                     continue
 
                 lower = full_url.lower()
@@ -1614,7 +1683,7 @@ def discover_internal_links(page, base_url, max_pages):
                 if any(keyword in lower for keyword in ['/logout', '/signout', '/sign-out', '/log-out']):
                     continue
 
-                clean_url = full_url.split('#')[0].rstrip('/')
+                clean_url = normalize_crawl_url(full_url)
                 if clean_url:
                     discovered.add(clean_url)
 
@@ -1758,7 +1827,8 @@ def build_crawl_queue(base_url, landing_url=None, session_used=False):
 
 
 def test_single_page(page, page_url, response_headers, console_messages,
-                     page_load_ms=0, api_responses=None, is_mobile=False):
+                     page_load_ms=0, api_responses=None, is_mobile=False,
+                     mobile_checked=None):
     """
     Run every check against one loaded page.
 
@@ -1767,21 +1837,26 @@ def test_single_page(page, page_url, response_headers, console_messages,
     a partial check look like a clean bill of health, and carries the real
     performance metrics for this page.
 
-    Mobile tap-target auditing lives in check_mobile() and is currently
-    disabled for automated runs (desktop workflow focus). The
-    'mobile_issues' category is kept empty with an explicit skipped reason
-    so history stays comparable instead of silently disappearing.
-    `is_mobile` is accepted for backward compatibility and ignored.
+    Mobile tap-target auditing only means something in a mobile-width
+    viewport, so it runs only when `mobile_checked` is true (anonymous
+    crawls use a mobile viewport; authenticated crawls use desktop to keep
+    the session valid and skip it with an explicit reason). `is_mobile` is
+    the legacy spelling of the same flag.
     """
+    if mobile_checked is None:
+        mobile_checked = bool(is_mobile)
     broken_links, link_coverage = check_broken_links(page, page_url)
     missing_alt = check_missing_alt(page)
     seo_issues = check_seo(page, page_url)
     security_issues = check_security(page_url, response_headers)
     accessibility_issues, a11y_engine = check_accessibility(page)
 
-    # Mobile auditing is disabled for automated runs (see docstring).
-    mobile_issues, mobile_coverage = [], {}
-    mobile_skipped_reason = 'disabled: automated runs focus on desktop workflow'
+    if mobile_checked:
+        mobile_issues, mobile_coverage = check_mobile(page)
+        mobile_skipped_reason = None
+    else:
+        mobile_issues, mobile_coverage = [], {}
+        mobile_skipped_reason = 'disabled: page was audited in a desktop viewport'
 
     performance_issues, perf_metrics = check_performance(page, page_load_ms)
     api_issues = check_api_responses(api_responses)
@@ -2314,6 +2389,7 @@ def _previous_run_findings(testcase_id):
             """SELECT findings_evidence, health_score
                FROM test_runs
                WHERE test_case_id = %s AND findings_evidence IS NOT NULL
+                 AND status != 'Cancelled'
                ORDER BY id DESC LIMIT 1""",
             (testcase_id,)
         )
@@ -2477,9 +2553,17 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             # the crawl start, and login screens are dropped from the queue — the user
             # captured a session precisely so the pages BEHIND the login get tested.
             landing = _session_landing_url(tc.get('project_id')) if session_used else None
-            to_visit = build_crawl_queue(base_url, landing_url=landing,
-                                         session_used=session_used)
+            to_visit = [normalize_crawl_url(u) for u in
+                        build_crawl_queue(base_url, landing_url=landing,
+                                          session_used=session_used)]
             queued = set(to_visit)
+            # Pages per URL pattern already committed to by the seed queue,
+            # so discovery below cannot spend the budget on near-duplicates
+            # of a page we already plan to visit (e.g. /dp/ASIN1 ... /dp/ASIN99).
+            pattern_counts = {}
+            for seed in to_visit:
+                pat = crawl_pattern(seed)
+                pattern_counts[pat] = pattern_counts.get(pat, 0) + 1
             if session_used:
                 logger.info("authenticated crawl queue: %s", to_visit)
 
@@ -2498,13 +2582,16 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         pass
                     # SPAs redirect after hydration; wait for it to stop moving.
                     wait_for_page_settled(warm)
-                    landed = warm.url.rstrip('/').split('#')[0]
+                    landed = normalize_crawl_url(
+                        warm.url.rstrip('/').split('#')[0])
                     if landed and not looks_like_login(landed):
                         if landed not in queued:
                             # Front of the queue so the crawl starts from the
                             # authenticated landing page, not the login URL.
                             to_visit.insert(0, landed)
                             queued.add(landed)
+                            pat = crawl_pattern(landed)
+                            pattern_counts[pat] = pattern_counts.get(pat, 0) + 1
                         # Now that a genuine authenticated page is confirmed, the
                         # login screens in the queue are dead weight.
                         pruned = [u for u in to_visit if not looks_like_login(u)]
@@ -2556,12 +2643,14 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             }) if response.request.resource_type in ('xhr', 'fetch') else None)
 
             page_idx = -1
+            was_cancelled = False
             while to_visit and len(per_page_records) < max_pages:
                 # User clicked Cancel — stop the crawl and persist whatever we
                 # already captured. Treated as a graceful exit, not an error.
                 if _is_cancelled():
                     logger.info("crawl cancelled by user at page %d/%d",
                                 len(per_page_records), max_pages)
+                    was_cancelled = True
                     break
                 page_url = to_visit.pop(0)
                 page_idx += 1
@@ -2643,7 +2732,12 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         page, page_url, response_headers,
                         console_messages,
                         page_load_ms=page_load_ms,
-                        api_responses=api_responses)
+                        api_responses=api_responses,
+                        # Anonymous crawls run in a mobile viewport, so the
+                        # mobile checks measure something real there.
+                        # Authenticated crawls run desktop (session validity
+                        # depends on the desktop UA), where they would be noise.
+                        mobile_checked=not session_used)
                     if page_idx == 0:
                         page_findings['functional_issues'] = step_findings
                         page_coverage['steps'] = step_summary
@@ -2684,12 +2778,21 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                     # Discover further internal links from this rendered page and
                     # enqueue any we haven't seen (BFS), until the queue holds enough
                     # to reach max_pages. Done before closing the page.
+                    # Near-duplicate URL patterns (product listings, paginated
+                    # indexes) are capped so one section cannot eat the whole
+                    # page budget while the rest of the site goes untested.
                     if crawl_pages and len(queued) < max_pages * 4:
                         try:
                             for link in discover_internal_links(page, base_url, max_pages):
-                                if link not in queued:
-                                    queued.add(link)
-                                    to_visit.append(link)
+                                norm = normalize_crawl_url(link)
+                                if norm in queued:
+                                    continue
+                                pat = crawl_pattern(norm)
+                                if pattern_counts.get(pat, 0) >= PATTERN_PAGES_CAP:
+                                    continue
+                                pattern_counts[pat] = pattern_counts.get(pat, 0) + 1
+                                queued.add(norm)
+                                to_visit.append(norm)
                         except Exception as e:
                             logger.warning("crawl link-discovery error: %s", e)
 
@@ -2785,7 +2888,10 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             regression = build_regression(prev_findings, merged_findings,
                                           prev_score, health_score)
             issues_found = sum(len(items) for items in merged_findings.values())
-            status = 'Pass' if issues_found == 0 else 'Fail'
+            # A cancelled crawl is not a verdict on the site: it records what
+            # was captured so far as 'Cancelled' and leaves the test case's
+            # status alone, instead of stamping Pass/Fail on a partial audit.
+            status = 'Cancelled' if was_cancelled else ('Pass' if issues_found == 0 else 'Fail')
             # A Pass on a partial audit is not a full all-clear. We keep the
             # Pass/Fail meaning simple and let coverage_summary['notes'] carry
             # the caveat about anything that was capped or skipped.
@@ -2868,11 +2974,12 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
 
             mysql.connection.commit()
 
-            cursor.execute(
-                "UPDATE test_cases SET status = %s WHERE id = %s",
-                (status, testcase_id)
-            )
-            mysql.connection.commit()
+            if not was_cancelled:
+                cursor.execute(
+                    "UPDATE test_cases SET status = %s WHERE id = %s",
+                    (status, testcase_id)
+                )
+                mysql.connection.commit()
             cursor.close()
 
             return {
