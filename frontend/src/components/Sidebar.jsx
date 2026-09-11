@@ -1,4 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import {
   LayoutDashboard,
   FolderKanban,
@@ -15,7 +16,7 @@ const navItems = [
   { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/projects', icon: FolderKanban, label: 'Projects' },
   { path: '/testcases', icon: ClipboardList, label: 'Test Cases' },
-  { path: '/bugs', icon: Bug, label: 'Bugs' },
+  { path: '/bugs', icon: Bug, label: 'Bug Tracker' },
   { path: '/ai-assistant', icon: Sparkles, label: 'AI Assistant' },
   { path: '/reports', icon: BarChart3, label: 'Reports' },
 ];
@@ -44,23 +45,38 @@ const Sidebar = () => {
   };
 
   return (
-    <aside className="w-60 min-h-screen sticky top-0 flex flex-col bg-surface border-r border-white/10 shrink-0">
-      <div className="px-5 py-4 border-b border-white/10">
-        <div className="flex items-center gap-2.5">
-          <div className="grid place-items-center w-8 h-8 rounded-md bg-[#2f6fed]">
-            <ShieldCheck className="w-4 h-4 text-white" strokeWidth={2.2} />
+    <aside className="w-64 min-h-screen sticky top-0 flex flex-col glass-strong border-r border-white/10 shrink-0">
+      {/* Logo */}
+      <div className="p-6 border-b border-white/10">
+        <div className="flex items-center gap-3">
+          <div className="grid place-items-center w-10 h-10 rounded-xl bg-brand-gradient shadow-glow">
+            <ShieldCheck className="w-5 h-5 text-white" strokeWidth={2.2} />
           </div>
-          <span className="text-[15px] font-semibold text-slate-100">QA Platform</span>
+          <div>
+            <h1 className="text-lg font-display font-bold leading-none text-white">
+              QA Platform
+            </h1>
+            <p className="text-slate-400 text-xs mt-1">Testing, intelligently</p>
+          </div>
         </div>
       </div>
 
-      <div className="px-5 py-3 border-b border-white/10">
-        <p className="text-sm text-slate-200 truncate">{user.username || 'Guest'}</p>
-        <p className="text-xs text-slate-500 capitalize">{user.role || 'tester'}</p>
+      {/* User Info */}
+      <div className="p-4 border-b border-white/10">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-indigo to-brand-teal grid place-items-center font-semibold text-white">
+            {user.username?.[0]?.toUpperCase() || '?'}
+          </div>
+          <div className="min-w-0">
+            <p className="font-medium text-slate-100 truncate">{user.username || 'Guest'}</p>
+            <p className="text-slate-400 text-xs capitalize">{user.role || 'tester'}</p>
+          </div>
+        </div>
       </div>
 
-      <nav className="flex-1 px-2 py-3">
-        <ul className="space-y-0.5">
+      {/* Navigation */}
+      <nav className="flex-1 p-3">
+        <ul className="space-y-1">
           {links.map((item) => {
             const Icon = item.icon;
             const active = location.pathname === item.path;
@@ -69,15 +85,29 @@ const Sidebar = () => {
                 <button
                   onClick={() => navigate(item.path)}
                   aria-current={active ? 'page' : undefined}
-                  className={
-                    'w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-left text-sm transition-colors ' +
-                    (active
-                      ? 'bg-white/10 text-slate-100'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/5')
-                  }
+                  className={`group relative w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-left transition-colors ${
+                    active
+                      ? 'text-white'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-white/5'
+                  }`}
                 >
-                  <Icon className="w-4 h-4 shrink-0" strokeWidth={2} />
-                  <span>{item.label}</span>
+                  {active && (
+                    <motion.span
+                      layoutId="sidebar-active"
+                      transition={{ type: 'spring', stiffness: 500, damping: 38 }}
+                      className="absolute inset-0 rounded-xl bg-gradient-to-r from-brand-indigo/25 to-brand-teal/10 border border-brand-indigo/40 shadow-glow"
+                    />
+                  )}
+                  {active && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-1 rounded-full bg-brand-sky shadow-glow-sky" />
+                  )}
+                  <Icon
+                    className={`relative w-[18px] h-[18px] shrink-0 transition-colors ${
+                      active ? 'text-brand-sky' : 'text-slate-400 group-hover:text-slate-200'
+                    }`}
+                    strokeWidth={2}
+                  />
+                  <span className="relative text-sm font-medium">{item.label}</span>
                 </button>
               </li>
             );
@@ -85,13 +115,14 @@ const Sidebar = () => {
         </ul>
       </nav>
 
-      <div className="p-2 border-t border-white/10">
+      {/* Logout */}
+      <div className="p-3 border-t border-white/10">
         <button
           onClick={handleLogout}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-colors"
+          className="group w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
         >
-          <LogOut className="w-4 h-4 shrink-0" strokeWidth={2} />
-          <span>Log out</span>
+          <LogOut className="w-[18px] h-[18px] shrink-0" strokeWidth={2} />
+          <span className="text-sm font-medium">Logout</span>
         </button>
       </div>
     </aside>
