@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { User, Mail, Lock, Eye, EyeOff, Check, AlertCircle, Loader2, ShieldCheck } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { User, Mail, Lock, Eye, EyeOff, UserPlus, Check, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import axios from '../api/axiosConfig';
 import AuthBackground from '../components/AuthBackground';
 
@@ -118,37 +119,43 @@ const Register = () => {
     }
   };
 
-  // ===== Helper: border color =====
+  // ===== Helper: border color (dark theme) =====
   const getBorderColor = (check, formatValid, value) => {
-    if (!value) return 'border-white/10';
-    if (!formatValid) return 'border-red-500/50';
-    if (check.status === 'available') return 'border-emerald-600/60';
-    if (check.status === 'taken' || check.status === 'invalid') return 'border-red-500/50';
-    return 'border-white/10';
+    if (!value) return 'border-white/10 focus:ring-brand-sky/60';
+    if (!formatValid) return 'border-red-500/60 focus:ring-red-500/50';
+    if (check.status === 'available') return 'border-brand-teal/60 focus:ring-brand-teal/50';
+    if (check.status === 'taken' || check.status === 'invalid') return 'border-red-500/60 focus:ring-red-500/50';
+    return 'border-white/10 focus:ring-brand-sky/60';
   };
 
   const inputBase =
-    'w-full rounded-md bg-[#0f1419] border pl-10 pr-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 ' +
-    'focus:outline-none focus:border-[#4c8dff] transition disabled:opacity-60';
+    'w-full rounded-xl bg-white/5 border pl-11 pr-4 py-2.5 text-slate-100 placeholder:text-slate-500 ' +
+    'focus:outline-none focus:ring-2 transition disabled:opacity-60 disabled:cursor-not-allowed';
 
   return (
-    <div className="relative min-h-screen flex items-center justify-center p-4">
+    <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden">
       <AuthBackground />
 
-      <div className="card w-full max-w-[400px] p-6">
-        <div className="flex items-center gap-2.5 mb-6">
-          <div className="grid place-items-center w-8 h-8 rounded-md bg-[#2f6fed]">
-            <ShieldCheck className="w-4 h-4 text-white" strokeWidth={2.2} />
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: 'easeOut' }}
+        className="glass-strong rounded-2xl shadow-card w-full max-w-md p-8"
+      >
+        {/* Brand */}
+        <div className="flex flex-col items-center text-center mb-7">
+          <div className="grid place-items-center w-12 h-12 rounded-xl bg-brand-gradient shadow-glow mb-4">
+            <Sparkles className="w-6 h-6 text-white" strokeWidth={2.2} />
           </div>
-          <div>
-            <p className="text-[15px] font-semibold text-slate-100 leading-tight">QA Platform</p>
-            <p className="text-xs text-slate-500">Create an account</p>
-          </div>
+          <h1 className="text-2xl font-display font-bold text-white">
+            Create your <span className="text-gradient">account</span>
+          </h1>
+          <p className="text-slate-400 text-sm mt-1.5">Start testing websites in minutes</p>
         </div>
 
         {submitError && (
-          <div className="flex items-start gap-2 bg-red-500/10 border border-red-500/25 text-red-300 px-3 py-2.5 rounded-md mb-4 text-[13px]">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 rounded-xl mb-5 text-sm">
+            <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{submitError}</span>
           </div>
         )}
@@ -156,9 +163,9 @@ const Register = () => {
         <form onSubmit={handleRegister} className="space-y-4">
           {/* Username */}
           <div>
-            <label className="block text-slate-300 text-[13px] font-medium mb-1">Username</label>
+            <label className="block text-slate-300 text-sm font-medium mb-1.5">Username</label>
             <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <input
                 type="text"
                 value={username}
@@ -174,9 +181,9 @@ const Register = () => {
 
           {/* Email */}
           <div>
-            <label className="block text-slate-300 text-[13px] font-medium mb-1">Email</label>
+            <label className="block text-slate-300 text-sm font-medium mb-1.5">Email</label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <input
                 type="email"
                 value={email}
@@ -190,29 +197,29 @@ const Register = () => {
             <FieldMessage check={emailCheck} />
             {emailCheck.status === 'taken' && (
               <p className="text-sm mt-1">
-                <a href="/login" className="text-brand-sky hover:underline font-medium">Login instead?</a>
+                <Link to="/login" className="text-brand-sky hover:underline font-medium">Login instead?</Link>
               </p>
             )}
           </div>
 
           {/* Password */}
           <div>
-            <label className="block text-slate-300 text-[13px] font-medium mb-1">Password</label>
+            <label className="block text-slate-300 text-sm font-medium mb-1.5">Password</label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={loading}
-                className={`${inputBase} pr-10 border-white/10`}
-                placeholder="Min. 8 characters"
+                className={`${inputBase} pr-11 border-white/10 focus:ring-brand-sky/60`}
+                placeholder="Create a strong password"
                 required
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition"
                 tabIndex={-1}
                 aria-label={showPassword ? 'Hide password' : 'Show password'}
               >
@@ -223,8 +230,13 @@ const Register = () => {
 
           {/* Password Rules */}
           {password && (
-            <div className="bg-white/[0.02] border border-white/10 p-3.5 rounded-md">
-              <p className="text-[13px] font-medium text-slate-300 mb-2">Password requirements</p>
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              transition={{ duration: 0.3 }}
+              className="bg-white/5 border border-white/10 p-4 rounded-xl"
+            >
+              <p className="text-sm font-medium text-slate-300 mb-2">Password must contain:</p>
               <div className="space-y-1.5">
                 <Rule met={passwordRules.minLength} text="At least 8 characters" />
                 <Rule met={passwordRules.hasUppercase} text="One uppercase letter" />
@@ -232,31 +244,40 @@ const Register = () => {
                 <Rule met={passwordRules.hasNumber} text="One number" />
                 <Rule met={passwordRules.hasSpecial} text="One special character" />
               </div>
-            </div>
+            </motion.div>
           )}
 
           {/* Submit Button */}
-          <button
+          <motion.button
             type="submit"
             disabled={!canSubmit}
-            className="btn-primary w-full py-2 text-sm flex items-center justify-center gap-2"
+            whileTap={canSubmit ? { scale: 0.98 } : undefined}
+            whileHover={canSubmit ? { scale: 1.01 } : undefined}
+            className={`w-full py-3 rounded-xl font-semibold transition-all flex items-center justify-center gap-2 ${
+              canSubmit
+                ? 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal'
+                : 'bg-white/5 text-slate-500 border border-white/10 cursor-not-allowed'
+            }`}
           >
             {loading ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Creating account…
+                <Loader2 className="w-5 h-5 animate-spin" />
+                Creating account...
               </>
             ) : (
-              <>Create account</>
+              <>
+                <UserPlus className="w-5 h-5" />
+                {canSubmit ? 'Create Account' : 'Complete all requirements'}
+              </>
             )}
-          </button>
+          </motion.button>
         </form>
 
-        <p className="mt-5 text-center text-slate-500 text-[13px]">
+        <p className="mt-6 text-center text-slate-400 text-sm">
           Already have an account?{' '}
-          <Link to="/login" className="text-[#7aa8ff] hover:underline font-medium">Sign in</Link>
+          <Link to="/login" className="text-brand-sky hover:underline font-medium">Login</Link>
         </p>
-      </div>
+      </motion.div>
     </div>
   );
 };
@@ -266,20 +287,20 @@ const FieldMessage = ({ check }) => {
   if (check.status === 'idle') return null;
   if (check.status === 'checking') {
     return (
-      <p className="text-slate-500 text-[13px] mt-1 flex items-center gap-1">
+      <p className="text-slate-400 text-sm mt-1.5 flex items-center gap-1">
         <Loader2 className="w-3.5 h-3.5 animate-spin" /> {check.message}
       </p>
     );
   }
   if (check.status === 'available') {
     return (
-      <p className="text-emerald-400 text-[13px] mt-1 flex items-center gap-1">
+      <p className="text-brand-teal text-sm mt-1.5 flex items-center gap-1">
         <Check className="w-3.5 h-3.5" /> {check.message}
       </p>
     );
   }
   return (
-    <p className="text-red-400 text-[13px] mt-1 flex items-center gap-1">
+    <p className="text-red-400 text-sm mt-1.5 flex items-center gap-1">
       <AlertCircle className="w-3.5 h-3.5" /> {check.message}
     </p>
   );
@@ -288,13 +309,13 @@ const FieldMessage = ({ check }) => {
 const Rule = ({ met, text }) => (
   <div className="flex items-center gap-2">
     <div
-      className={`w-4 h-4 rounded-full flex items-center justify-center ${
-        met ? 'bg-emerald-600' : 'bg-white/10'
+      className={`w-4 h-4 rounded-full flex items-center justify-center transition-colors ${
+        met ? 'bg-brand-teal' : 'bg-white/10'
       }`}
     >
       {met && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
     </div>
-    <span className={`text-[13px] ${met ? 'text-slate-300' : 'text-slate-500'}`}>{text}</span>
+    <span className={`text-sm transition-colors ${met ? 'text-slate-200' : 'text-slate-500'}`}>{text}</span>
   </div>
 );
 

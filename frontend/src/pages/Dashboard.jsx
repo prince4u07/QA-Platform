@@ -1,36 +1,47 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import {
   FolderKanban,
   ClipboardList,
   Bug,
   CheckCircle2,
+  FolderPlus,
+  FilePlus2,
+  Sparkles,
+  BarChart3,
+  ArrowRight,
 } from 'lucide-react';
 import axios from '../api/axiosConfig';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
 
-const StatCard = ({ icon: Icon, label, value, sub }) => (
-  <div className="card p-4">
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <p className="text-[13px] text-slate-400">{label}</p>
-        <p className="text-2xl font-semibold text-slate-100 mt-1 tabular-nums">{value}</p>
-        {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
+const StatCard = ({ icon: Icon, label, value, accent, delay }) => (
+  <motion.div
+    initial={{ opacity: 0, y: 12 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ duration: 0.4, delay, ease: 'easeOut' }}
+    whileHover={{ y: -3 }}
+    className="glass rounded-2xl p-5 transition-colors hover:bg-white/[0.07] hover:border-brand-indigo/30 hover:shadow-glow cursor-default"
+  >
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="text-slate-400 text-sm">{label}</p>
+        <p className="text-3xl font-display font-bold text-white mt-1 tabular-nums">{value}</p>
       </div>
-      <div className="grid place-items-center w-9 h-9 rounded-md bg-white/5 border border-white/10 text-slate-400 shrink-0">
-        <Icon className="w-[18px] h-[18px]" strokeWidth={2} />
+      <div className={`grid place-items-center w-12 h-12 rounded-xl ${accent}`}>
+        <Icon className="w-6 h-6" strokeWidth={2} />
       </div>
     </div>
-  </div>
+  </motion.div>
 );
 
 const QUICK_ACTIONS = [
-  { label: 'New project', hint: 'Register a site to audit', path: '/projects' },
-  { label: 'Add test case', hint: 'Manual or automated', path: '/testcases' },
-  { label: 'Log a bug', hint: 'File from a test run', path: '/bugs' },
-  { label: 'Ask AI assistant', hint: 'Explain a failure', path: '/ai-assistant' },
-  { label: 'View reports', hint: 'Runs and coverage', path: '/reports' },
+  { label: 'New Project', hint: 'Register a site to audit', icon: FolderPlus, path: '/projects' },
+  { label: 'Add Test Case', hint: 'Manual or automated', icon: FilePlus2, path: '/testcases' },
+  { label: 'Log Bug', hint: 'File from a test run', icon: Bug, path: '/bugs' },
+  { label: 'AI Suggestions', hint: 'Explain a failure', icon: Sparkles, path: '/ai-assistant' },
+  { label: 'View Reports', hint: 'Runs and coverage', icon: BarChart3, path: '/reports' },
 ];
 
 const Dashboard = () => {
@@ -87,44 +98,67 @@ const Dashboard = () => {
   const v = (n) => (loading ? '—' : n);
 
   return (
-    <div className="relative flex min-h-screen">
+    <div className="relative flex min-h-screen text-slate-200">
       <AmbientBackground />
       <Sidebar />
 
-      <div className="flex-1 px-6 py-6 max-w-6xl">
-        <div className="mb-6">
-          <p className="text-xs text-slate-500 uppercase tracking-wide">Dashboard</p>
-          <h1 className="text-xl font-semibold text-slate-100 mt-1">
-            {user.username ? `${user.username}'s workspace` : 'Workspace'}
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
+      <div className="flex-1 p-8 max-w-6xl">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="mb-8"
+        >
+          <h2 className="text-3xl font-display font-bold text-white">
+            Welcome back, <span className="text-gradient">{user.username || 'tester'}</span>
+          </h2>
+          <p className="text-slate-400 mt-1">
             {loading ? 'Loading…' : `${stats.projects} projects · ${stats.testCases} test cases · ${stats.bugs} open bugs`}
           </p>
+        </motion.div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+          <StatCard icon={FolderKanban} label="Total Projects" value={v(stats.projects)} accent="bg-brand-indigo/15 text-brand-indigo" delay={0} />
+          <StatCard icon={ClipboardList} label="Test Cases" value={v(stats.testCases)} accent="bg-brand-sky/15 text-brand-sky" delay={0.05} />
+          <StatCard icon={Bug} label="Open Bugs" value={v(stats.bugs)} accent="bg-rose-500/15 text-rose-400" delay={0.1} />
+          <StatCard icon={CheckCircle2} label="Tests Passed" value={v(stats.passed)} accent="bg-brand-teal/15 text-brand-teal" delay={0.15} />
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <StatCard icon={FolderKanban} label="Projects" value={v(stats.projects)} />
-          <StatCard icon={ClipboardList} label="Test cases" value={v(stats.testCases)} />
-          <StatCard icon={Bug} label="Open bugs" value={v(stats.bugs)} sub={loading ? '' : stats.bugs === 0 ? 'Nothing open' : 'Needs triage'} />
-          <StatCard icon={CheckCircle2} label="Tests passed" value={v(stats.passed)} />
-        </div>
-
-        <div className="card p-5">
-          <h2 className="text-sm font-semibold text-slate-200">Shortcuts</h2>
-          <p className="text-[13px] text-slate-500 mt-0.5 mb-4">Common tasks, nothing fancy.</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {QUICK_ACTIONS.map((action) => (
-              <button
-                key={action.path + action.label}
-                onClick={() => navigate(action.path)}
-                className="flex flex-col items-start text-left px-3.5 py-3 rounded-md border border-white/10 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/20 transition-colors"
-              >
-                <span className="text-sm font-medium text-slate-200">{action.label}</span>
-                <span className="text-xs text-slate-500 mt-0.5">{action.hint}</span>
-              </button>
-            ))}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.2 }}
+          className="glass rounded-2xl p-6"
+        >
+          <h3 className="text-xl font-display font-bold text-white mb-1">Quick Actions</h3>
+          <p className="text-sm text-slate-500 mb-4">Jump into common tasks.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {QUICK_ACTIONS.map((action, i) => {
+              const Icon = action.icon || ClipboardList;
+              return (
+                <motion.button
+                  key={action.path + action.label}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: 0.2 + i * 0.05 }}
+                  whileHover={{ y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => navigate(action.path)}
+                  className="group flex items-center gap-3 p-4 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.07] hover:border-brand-indigo/40 hover:shadow-glow transition-all text-left"
+                >
+                  <span className="grid place-items-center w-9 h-9 rounded-lg bg-brand-indigo/15 text-brand-sky group-hover:text-brand-teal transition-colors">
+                    <Icon className="w-[18px] h-[18px]" strokeWidth={2} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block font-medium text-slate-200">{action.label}</span>
+                    {action.hint && <span className="block text-xs text-slate-500 mt-0.5">{action.hint}</span>}
+                  </span>
+                  <ArrowRight className="w-4 h-4 ml-auto shrink-0 text-slate-600 group-hover:text-brand-sky group-hover:translate-x-0.5 transition" />
+                </motion.button>
+              );
+            })}
           </div>
-        </div>
+        </motion.div>
       </div>
     </div>
   );

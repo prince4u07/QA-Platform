@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import {
   Plus,
   FolderOpen,
@@ -234,13 +235,13 @@ const Projects = () => {
 
   // ----- shared styles -----
   const inputBase =
-    'w-full rounded-md bg-[#0f1419] border border-white/10 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 ' +
-    'focus:outline-none focus:border-[#4c8dff] transition';
+    'w-full rounded-xl bg-white/5 border border-white/10 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 ' +
+    'focus:outline-none focus:ring-2 focus:ring-brand-sky/60 focus:border-brand-sky/40 transition';
   const toggleClass = (active) =>
-    'flex-1 cursor-pointer px-3 py-2 border rounded-md text-center text-sm transition ' +
+    'flex-1 cursor-pointer px-3 py-2 border rounded-xl text-center text-sm transition-all ' +
     (active
-      ? 'border-[#4c8dff]/60 bg-[#2f6fed]/15 text-slate-100 font-medium'
-      : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/5');
+      ? 'border-brand-indigo/50 bg-brand-indigo/15 text-white font-medium shadow-glow'
+      : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10 hover:border-white/20');
 
   return (
     <div className="relative flex min-h-screen">
@@ -248,50 +249,70 @@ const Projects = () => {
       <Sidebar />
 
       <div className="flex-1 px-6 py-6 max-w-6xl">
-        <div className="flex justify-between items-center mb-6 gap-4">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="flex justify-between items-center mb-6 gap-4"
+        >
           <div>
-            <p className="text-xs text-slate-500 uppercase tracking-wide">Projects</p>
-            <h1 className="text-xl font-semibold text-slate-100 mt-1">Test projects</h1>
-            <p className="text-sm text-slate-500 mt-1">
+            <h1 className="text-3xl font-display font-bold text-white">Test <span className="text-gradient">projects</span></h1>
+            <p className="text-sm text-slate-400 mt-1">
               {totalProjects > 0 ? `${totalProjects} total` : 'Register a site to start auditing it'}
             </p>
           </div>
-          <button
+          <motion.button
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={openCreateModal}
-            className="btn-primary flex items-center gap-2 px-4 py-2 text-sm"
+            className="bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all"
           >
             <Plus className="w-4 h-4" /> New project
-          </button>
-        </div>
+          </motion.button>
+        </motion.div>
 
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-20 text-slate-500 text-sm">
             <Loader2 className="w-4 h-4 animate-spin" /> Loading projects…
           </div>
         ) : projects.length === 0 ? (
-          <div className="card p-10 text-center">
-            <div className="grid place-items-center w-11 h-11 mx-auto rounded-md bg-white/5 border border-white/10 text-slate-400 mb-3">
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="glass rounded-2xl p-10 text-center"
+          >
+            <div className="grid place-items-center w-11 h-11 mx-auto rounded-xl bg-brand-indigo/15 text-brand-sky mb-3">
               <FolderOpen className="w-5 h-5" />
             </div>
-            <h3 className="text-[15px] font-semibold text-slate-200 mb-1">No projects yet</h3>
-            <p className="text-sm text-slate-500 mb-5">
+            <h3 className="text-[15px] font-semibold text-white mb-1">No projects yet</h3>
+            <p className="text-sm text-slate-400 mb-5">
               Add your first site to run tests against it.
             </p>
-            <button
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
               onClick={openCreateModal}
-              className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+              className="bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all"
             >
               <Plus className="w-4 h-4" /> Create project
-            </button>
-          </div>
+            </motion.button>
+          </motion.div>
         ) : (
           <div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {projects.map((p) => (
-                <div key={p.id} className="h-full">
-                  <div className="card p-5 h-full flex flex-col">
+              {projects.map((p, i) => (
+                <motion.div
+                  key={p.id}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.35, delay: Math.min(i * 0.05, 0.3) }}
+                  whileHover={{ y: -4 }}
+                  className="h-full"
+                >
+                  <div className="glass rounded-2xl p-5 h-full flex flex-col hover:bg-white/[0.07] hover:border-brand-indigo/40 hover:shadow-glow transition-all">
                       <div className="flex justify-between items-start mb-3 gap-2">
-                        <h3 className="text-[15px] font-semibold text-slate-100 truncate flex-1">
+                        <h3 className="text-[15px] font-semibold text-white truncate flex-1">
                           {p.name}
                         </h3>
                         <span className={'text-[11px] font-medium px-2 py-0.5 rounded ' + envColor(p.environment)}>
@@ -315,7 +336,7 @@ const Projects = () => {
                         href={p.base_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 text-[13px] text-[#7aa8ff] hover:underline break-all mb-2.5"
+                        className="inline-flex items-center gap-1.5 text-[13px] text-brand-sky hover:text-brand-teal hover:underline break-all mb-2.5 transition-colors"
                       >
                         <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                         {p.base_url && p.base_url.length > 46 ? p.base_url.substring(0, 46) + '...' : p.base_url}
@@ -341,12 +362,12 @@ const Projects = () => {
                           onClick={() => handleOpenLogin(p)}
                           disabled={openingLoginFor === p.id}
                           className={
-                            'w-full flex items-center justify-center gap-2 text-[13px] py-2 rounded-md font-medium transition mb-2.5 border ' +
+                            'w-full flex items-center justify-center gap-2 text-[13px] py-2 rounded-xl font-medium transition-all mb-2.5 border ' +
                             (openingLoginFor === p.id
                               ? 'bg-white/5 text-slate-400 border-white/10 cursor-wait'
                               : p.has_active_session
-                                ? 'bg-white/5 hover:bg-white/10 text-slate-200 border-white/10'
-                                : 'bg-[#2f6fed] hover:bg-[#3b7bf5] text-white border-transparent')
+                                ? 'bg-white/5 hover:bg-brand-indigo/20 hover:border-brand-indigo/40 hover:text-white text-slate-200 border-white/10'
+                                : 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal border-transparent')
                           }
                         >
                           {openingLoginFor === p.id ? (
@@ -361,20 +382,20 @@ const Projects = () => {
                         <div className="flex gap-2 pt-2.5 border-t border-white/10">
                           <button
                             onClick={() => openEditModal(p)}
-                            className="flex-1 flex items-center justify-center gap-1.5 text-[13px] bg-transparent hover:bg-white/5 text-slate-300 border border-white/10 py-1.5 rounded-md transition"
+                            className="flex-1 flex items-center justify-center gap-1.5 text-[13px] bg-transparent hover:bg-brand-sky/15 hover:text-white hover:border-brand-sky/40 text-slate-300 border border-white/10 py-1.5 rounded-xl transition-all"
                           >
                             <Pencil className="w-3.5 h-3.5" /> Edit
                           </button>
                           <button
                             onClick={() => handleDelete(p.id, p.name)}
-                            className="flex-1 flex items-center justify-center gap-1.5 text-[13px] bg-transparent hover:bg-red-500/10 text-slate-400 hover:text-red-300 border border-white/10 hover:border-red-500/25 py-1.5 rounded-md transition"
+                            className="flex-1 flex items-center justify-center gap-1.5 text-[13px] bg-transparent hover:bg-red-500/15 text-slate-400 hover:text-red-200 border border-white/10 hover:border-red-500/40 hover:shadow-glow py-1.5 rounded-xl transition-all"
                           >
                             <Trash2 className="w-3.5 h-3.5" /> Delete
                           </button>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </motion.div>
               ))}
             </div>
 
@@ -394,10 +415,10 @@ const Projects = () => {
                       key={page}
                       onClick={() => setCurrentPage(page)}
                       className={
-                        'w-8 h-8 rounded-md text-[13px] transition border ' +
+                        'w-8 h-8 rounded-xl text-[13px] transition-all border ' +
                         (currentPage === page
-                          ? 'bg-[#2f6fed] text-white border-transparent font-medium'
-                          : 'bg-transparent hover:bg-white/5 text-slate-400 border-white/10')
+                          ? 'bg-brand-gradient text-white shadow-glow border-transparent font-medium'
+                          : 'bg-transparent hover:bg-white/10 hover:border-brand-indigo/40 text-slate-400 border-white/10')
                       }
                     >
                       {page}
@@ -422,8 +443,13 @@ const Projects = () => {
 
       {/* CREATE / EDIT MODAL */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="card w-full max-w-lg max-h-screen overflow-y-auto">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.97, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            className="glass-strong rounded-2xl shadow-card w-full max-w-lg max-h-screen overflow-y-auto"
+          >
             <div className="px-5 py-4 border-b border-white/10 flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-[15px] font-semibold text-slate-100">
@@ -548,14 +574,19 @@ const Projects = () => {
                 </button>
               </div>
             </form>
-          </div>
+          </motion.div>
         </div>
       )}
 
       {/* MANUAL LOGIN PROMPT */}
       {loginProject && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="card w-full max-w-md">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.97, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            className="glass-strong rounded-2xl shadow-card w-full max-w-md"
+          >
             <div className="px-5 py-4 border-b border-white/10">
               <h2 className="text-[15px] font-semibold text-slate-100 flex items-center gap-2">
                 <KeyRound className="w-4 h-4 text-slate-400" /> Log in to {loginProject.name}
@@ -598,7 +629,7 @@ const Projects = () => {
                 </button>
               </div>
             </div>
-          </div>
+          </motion.div>
         </div>
       )}
     </div>

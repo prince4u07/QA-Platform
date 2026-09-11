@@ -7,53 +7,106 @@
     color-scheme: dark;
   }
   body {
-    @apply bg-base text-slate-300 antialiased;
+    @apply bg-base text-slate-200 font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
   h1, h2, h3, h4 {
-    @apply text-slate-100 font-semibold tracking-normal;
+    /* Plain CSS (not @apply) so this never depends on generated utilities. */
+    font-family: "Space Grotesk", Inter, system-ui, sans-serif;
+    letter-spacing: -0.04em;
+    color: #fff;
   }
+  /* Accessible focus ring across the app */
   :focus-visible {
-    outline: 2px solid #4c8dff;
+    outline: 2px solid #38bdf8;
     outline-offset: 2px;
     border-radius: 4px;
   }
 }
 
 @layer components {
-  /* Legacy class names kept so older pages still render.
-     Now flat solid surfaces — no blur, no translucency. */
+  /* Frosted glass surface — plain CSS so it never depends on @apply resolution. */
   .glass {
-    @apply bg-surface border border-white/10;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
   }
   .glass-strong {
-    @apply bg-surface border border-white/10;
+    background-color: rgba(22, 27, 34, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
   }
-  /* Old gradient button helper — now a flat solid blue. */
-  .bg-brand-gradient {
-    background-color: #2f6fed;
-    background-image: none;
-  }
-  /* Old gradient headline helper — now plain light text. */
+  /* Gradient text for headlines / brand */
   .text-gradient {
-    @apply text-slate-100;
-    background: none;
+    background-image: linear-gradient(to right, #6366f1, #38bdf8, #14b8a6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
-  /* Shared flat primitives for new / rewritten UI. */
+  /* Compat helpers used by newer pages — mapped onto the animated theme
+     so old + new class names both render with glass / glow / gradients. */
   .card {
-    @apply bg-surface border border-white/10 rounded-lg shadow-card;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
+    border-radius: 1rem;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
   }
   .btn-primary {
-    @apply bg-[#2f6fed] hover:bg-[#3b7bf5] disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium rounded-md transition-colors;
+    background-image: linear-gradient(135deg, #6366f1 0%, #14b8a6 100%);
+    color: #fff;
+    font-weight: 600;
+    border-radius: 0.75rem;
+    box-shadow: 0 0 24px -2px rgba(99, 102, 241, 0.45);
+    transition: all 0.2s ease;
+  }
+  .btn-primary:hover:not(:disabled) {
+    box-shadow: 0 0 24px -2px rgba(20, 184, 166, 0.4);
+  }
+  .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    box-shadow: none;
   }
   .btn-ghost {
-    @apply bg-transparent hover:bg-white/5 text-slate-300 border border-white/10 rounded-md transition-colors;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
+    color: #e2e8f0;
+    border-radius: 0.75rem;
+    transition: all 0.2s ease;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.1);
   }
   .input-flat {
-    @apply w-full rounded-md bg-[#0f1419] border border-white/10 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#4c8dff] transition disabled:opacity-60;
+    @apply w-full rounded-xl bg-white/5 border border-white/10 px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-sky/60 transition disabled:opacity-60;
+  }
+  .bg-brand-gradient {
+    background-image: linear-gradient(135deg, #6366f1 0%, #14b8a6 100%);
   }
 }
 
-/* Plain scrollbar */
+@layer utilities {
+  /* Full-bleed animated mesh-gradient backdrop (sits behind content) */
+  .mesh-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-color: #0d1117;
+    background-image:
+      radial-gradient(60% 60% at 30% 20%, rgba(99, 102, 241, 0.25) 0%, transparent 60%),
+      radial-gradient(50% 50% at 80% 80%, rgba(20, 184, 166, 0.18) 0%, transparent 60%);
+    background-repeat: no-repeat;
+    animation: mesh-drift 18s ease-in-out infinite;
+  }
+}
+
+/* Slim, themed scrollbars */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
@@ -64,11 +117,16 @@
 }
 *::-webkit-scrollbar-thumb {
   background-color: rgba(148, 163, 184, 0.25);
-  border-radius: 8px;
+  border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(148, 163, 184, 0.45);
+  background-clip: content-box;
+}
 
+/* Respect reduced-motion globally */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
