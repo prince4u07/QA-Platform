@@ -164,8 +164,20 @@ CREATE TABLE IF NOT EXISTS test_runs (
     -- newly introduced issues, issues that are now fixed, score movement.
     regression           LONGTEXT,
     error_message        VARCHAR(500),
+    -- Run classification (backfilled for old rows as AUTOMATED/HEADLESS/MACHINE).
+    -- run_type: MANUAL | AUTOMATED. execution_mode: HEADED | HEADLESS.
+    -- source: HUMAN | MACHINE | HYBRID (HYBRID = manual run with machine evidence).
+    run_type             VARCHAR(20)  DEFAULT 'AUTOMATED',
+    execution_mode       VARCHAR(20)  DEFAULT 'HEADLESS',
+    source               VARCHAR(20)  DEFAULT 'MACHINE',
+    -- Worst finding severity on the run (critical|serious|moderate|minor),
+    -- so dashboards can filter runs by severity without parsing JSON.
+    worst_severity       VARCHAR(20),
+    -- Machine-readable verdict reason (e.g. critical issues, health threshold).
+    verdict_reason       VARCHAR(500),
     FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE CASCADE,
-    INDEX idx_test_runs_case (test_case_id, run_at)
+    INDEX idx_test_runs_case (test_case_id, run_at),
+    INDEX idx_test_runs_type (run_type, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -186,6 +198,59 @@ CREATE TABLE IF NOT EXISTS crawled_pages (
     FOREIGN KEY (test_run_id) REFERENCES test_runs(id) ON DELETE CASCADE,
     INDEX idx_crawled_pages_run (test_run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+
+
+-- ============================================================
+-- MANUAL TEST EVIDENCE (per-step record, never mixed with
+-- automated findings)
+-- ============================================================
+
+-- One row per manual step result. Screenshots live on disk under
+-- static/uploads/manual_runs/<run_id>/; this table records the
+-- tester's verdict, note, timestamp and optional issue reference.
+CREATE TABLE IF NOT EXISTS manual_step_evidence (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    test_run_id   INT NOT NULL,
+    test_case_id  INT NOT NULL,
+    step_index    INT NOT NULL,
+    step_text     VARCHAR(1000),
+    result        VARCHAR(20) DEFAULT 'pending',
+                  -- passed | failed | skipped | pending
+    note          TEXT,
+    screenshot    VARCHAR(500),
+    issue_ref     VARCHAR(100),
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (test_run_id)  REFERENCES test_runs(id)  ON DELETE CASCADE,
+    FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE CASCADE,
+    INDEX idx_manual_step_run (test_run_id, step_index)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- Manually reported issues, stored separately from automated findings.
+-- source is always 'MANUAL' here; automated findings carry 'AUTOMATED'.
+CREATE TABLE IF NOT EXISTS manual_issues (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    test_run_id       INT,
+    test_case_id      INT,
+    title             VARCHAR(255) NOT NULL,
+    description       TEXT,
+    category          VARCHAR(50)  DEFAULT 'other',
+                      -- functional | ui-ux | layout | accessibility | content
+                      -- | business-logic | performance | broken-link | other
+    severity          VARCHAR(20)  DEFAULT 'moderate',
+    expected_result   TEXT,
+    actual_result     TEXT,
+    url               VARCHAR(2000),
+    screenshot        VARCHAR(500),
+    browser_device    VARCHAR(255),
+    step_index        INT,
+    source            VARCHAR(20)  DEFAULT 'MANUAL',
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (test_run_id)  REFERENCES test_runs(id)  ON DELETE SET NULL,
+    FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE SET NULL,
+    INDEX idx_manual_issues_run (test_run_id),
+    INDEX idx_manual_issues_case (test_case_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ============================================================

@@ -63,16 +63,26 @@ def _settle(page):
     return wait_for_page_settled(page)
 
 
-# What a manual tester is actually looking for. These are the judgement calls
-# no automated check can make, which is why a human is doing this at all.
+# What a manual tester is actually looking for. Judgement calls no
+# automated check can make, which is why a human is doing this at all.
+# Keys are stable slugs stored in the DB; labels are shown in the UI.
 ISSUE_CATEGORIES = {
-    'layout': 'Layout flaw',
-    'design': 'Poor design',
-    'functional': 'Functional error',
-    'content': 'Wrong or missing content',
-    'business': 'Does not match the business requirement',
-    'broken-link': 'Broken link',
+    'functional': 'Functional',
+    'ui-ux': 'UI/UX',
+    'layout': 'Layout',
+    'accessibility': 'Accessibility',
+    'content': 'Content',
+    'business-logic': 'Business Logic',
+    'performance': 'Performance',
+    'broken-link': 'Broken Link',
     'other': 'Other',
+}
+# Backwards-compatible aliases accepted from older clients/data.
+_ISSUE_CATEGORY_ALIASES = {
+    'design': 'ui-ux',
+    'business': 'business-logic',
+    'broken_link': 'broken-link',
+    'functional-error': 'functional',
 }
 ISSUE_SEVERITIES = ('critical', 'serious', 'moderate', 'minor')
 
@@ -98,6 +108,13 @@ def resolve_manual_page_limit(stored):
     return min(value, MANUAL_MAX_PAGES_CAP)
 
 
+def _normalise_issue_category(category):
+    """Map old/alias slugs to the canonical category set."""
+    key = (category or 'other').strip().lower().replace(' ', '-').replace('_', '-')
+    key = _ISSUE_CATEGORY_ALIASES.get(key, key)
+    return key if key in ISSUE_CATEGORIES else 'other'
+
+
 def _checklist_from(steps_text):
     """
     Turn the test case's Steps into a checklist the tester ticks off.
@@ -116,6 +133,8 @@ def _checklist_from(steps_text):
             'status': 'pending',    # pending | passed | failed | skipped
             'note': '',
             'screenshot': '',
+            'updated_at': None,
+            'issue_ref': None,
         })
     return items
 
@@ -167,12 +186,21 @@ class _ManualSession:
         self.run_dir = os.path.join(MANUAL_RUNS_DIR, self.run_id)
 
         # status: starting | ready | crawling | finishing | done | cancelled | timeout | error
+        # plus paused (tester paused the session; worker waits, browser stays open)
         self.status = 'starting'
         self.error = None
         self.outcome = None         # 'Pass' | 'Fail'  (set by /done)
         self.note = ''              # optional user note
         self.started_at = datetime.utcnow()
         self.finished_at = None
+        self.paused = False
+        self.current_url = base_url
+        self.current_title = ''
+        self.browser_device = ''
+
+        # Console evidence collected while the tester browses (assistance
+        # only — never part of the manual verdict).
+        self._console = []
 
         # Live snapshot for the UI to poll.
         self.pages = []             # [{url, screenshot, captured_at, source: 'manual'|'auto'}]
@@ -208,13 +236,21 @@ class _ManualSession:
             steps = [dict(s) for s in self.steps]
             done = sum(1 for s in steps if s['status'] != 'pending')
             failed = sum(1 for s in steps if s['status'] == 'failed')
+            total = len(steps)
+            progress_pct = int(round(done / total * 100)) if total else 0
+            last_page = self.pages[-1] if self.pages else {}
             return {
                 'run_id': self.run_id,
                 'testcase_id': self.testcase_id,
                 'project_id': self.project_id,
-                'status': self.status,
+                'status': 'paused' if self.paused and self.status == 'ready' else self.status,
+                'paused': self.paused,
                 'pages_visited': len(self.pages),
                 'pages': list(self.pages),
+                'current_url': self.current_url,
+                'current_title': self.current_title,
+                'current_screenshot': last_page.get('screenshot', ''),
+                'browser_device': self.browser_device,
                 'max_pages': self.max_pages,
                 'outcome': self.outcome,
                 'error': self.error,
@@ -232,11 +268,13 @@ class _ManualSession:
                 'auto_findings': list(self.auto_findings),
                 'auto_findings_count': len(self.auto_findings),
                 'auto_checked_pages': self.auto_checked_pages,
+                'progress_pct': progress_pct,
                 'issue_categories': ISSUE_CATEGORIES,
+                'observation_sections': ['human_observation', 'automated_evidence'],
             }
 
     # ---- tester actions (called from Flask request threads) ----
-    def mark_step(self, index, status, note=''):
+    def mark_step(self, index, status, note='', issue_ref=None):
         """Tick one checklist item off. Returns True if the index existed."""
         if status not in ('pending', 'passed', 'failed', 'skipped'):
             return False
@@ -244,14 +282,24 @@ class _ManualSession:
             if index < 0 or index >= len(self.steps):
                 return False
             self.steps[index]['status'] = status
-            self.steps[index]['note'] = (note or '')[:500]
+            self.steps[index]['note'] = (note or '')[:2000]
+            self.steps[index]['updated_at'] = datetime.utcnow().isoformat()
+            if issue_ref:
+                self.steps[index]['issue_ref'] = str(issue_ref)[:100]
             # Pin the most recent page to the step, so a failed step points at
             # the screen it failed on rather than at nothing.
             if self.pages:
                 self.steps[index]['screenshot'] = self.pages[-1]['screenshot']
         return True
 
-    def report_issue(self, category, severity, title, note='', step_index=None):
+    def set_paused(self, paused):
+        with self._lock:
+            self.paused = bool(paused)
+        return self.paused
+
+    def report_issue(self, category, severity, title, note='', step_index=None,
+                     description='', expected_result='', actual_result='',
+                     browser_device=''):
         """
         Record something the tester spotted, against the page they are on.
 
@@ -262,19 +310,27 @@ class _ManualSession:
         title = (title or '').strip()
         if not title:
             return None
+        # Description falls back to the legacy note field.
+        description = (description or note or '').strip()
         with self._lock:
             page = self.pages[-1] if self.pages else {}
             entry = {
                 'index': len(self.reported),
-                'category': category if category in ISSUE_CATEGORIES else 'other',
+                'category': _normalise_issue_category(category),
                 'severity': severity if severity in ISSUE_SEVERITIES else 'moderate',
                 'title': title[:255],
-                'note': (note or '')[:2000],
+                'description': description[:2000],
+                'note': description[:2000],
+                'expected_result': (expected_result or '')[:2000],
+                'actual_result': (actual_result or '')[:2000],
                 'page_url': page.get('url', self.base_url),
+                'url': page.get('url', self.base_url),
                 'screenshot': page.get('screenshot', ''),
+                'browser_device': (browser_device or self.browser_device or '')[:255],
                 'step_index': step_index,
                 'reported_at': datetime.utcnow().isoformat(),
-                'source': 'tester',
+                'timestamp': datetime.utcnow().isoformat(),
+                'source': 'MANUAL',
             }
             self.reported.append(entry)
         logger.info("manual-run %s: tester reported %s (%s)",
@@ -298,23 +354,43 @@ class _ManualSession:
                 # fall back to bundled Chromium if Chrome isn't installed.
                 stealth_args = ['--start-maximized',
                                 '--disable-blink-features=AutomationControlled']
+                headed = os.getenv('QA_MANUAL_HEADLESS') != '1'
                 try:
+                    if not headed:
+                        raise RuntimeError('headless test mode')
                     browser = p.chromium.launch(
                         channel='chrome', headless=False, args=stealth_args,
                     )
                     logger.info("manual-run: using installed Chrome")
                 except Exception as e:
-                    logger.warning("real Chrome not available (%s); using bundled Chromium", e)
-                    browser = p.chromium.launch(headless=False, args=stealth_args)
+                    if headed:
+                        logger.warning("real Chrome not available (%s); using bundled Chromium", e)
+                    browser = p.chromium.launch(headless=not headed, args=stealth_args)
                 context = browser.new_context(no_viewport=True)
                 context.add_init_script(
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                 )
                 page = context.new_page()
+                try:
+                    self.browser_device = context._options.get('user_agent', '')[:255] \
+                        if hasattr(context, '_options') else ''
+                except Exception:
+                    pass
+                # Console evidence: assistance only, never drives the verdict.
+                try:
+                    page.on('console', lambda msg: self._console.append({
+                        'type': msg.type,
+                        'text': msg.text,
+                        'page_url': self.current_url,
+                        'display': f"[{msg.type}] {(msg.text or '')[:200]}",
+                    }) if msg.type in ('error', 'warning') else None)
+                except Exception:
+                    pass
 
                 try:
                     page.goto(self.base_url, timeout=60000, wait_until='commit')
                 except Exception as e:
+                    self.error = f"Website unreachable: {str(e)[:300]}"
                     logger.warning("manual-run goto failed: %s", e)
 
                 # Capture the initial page once it has actually paints.
@@ -354,6 +430,10 @@ class _ManualSession:
                        and not self._autocrawl_event.is_set()
                        and time.time() < deadline):
                     time.sleep(WATCH_POLL_SECS)
+                    # Paused: keep the browser open, stop capturing/checking.
+                    if self.paused:
+                        stable_since = time.time()
+                        continue
                     try:
                         current_url = page.url
                     except Exception as e:
@@ -427,6 +507,13 @@ class _ManualSession:
         except Exception as e:
             logger.warning("manual-run screenshot failed: %s", e)
             return
+        try:
+            title = (page.title() or '')[:500]
+        except Exception:
+            title = ''
+        with self._lock:
+            self.current_url = url
+            self.current_title = title
         # Collapse rapid same-page captures (redirect chains, re-renders):
         # without this each bounce records another "page" and the page count
         # and auto-check budget are spent on one screen.
@@ -440,9 +527,14 @@ class _ManualSession:
             idx = len(self.pages) + 1
             filename = f'p{idx:03d}.png'
             filepath = os.path.join(self.run_dir, filename)
-            page.screenshot(path=filepath, full_page=False)
+            try:
+                page.screenshot(path=filepath, full_page=False)
+            except Exception as e:
+                logger.warning("manual-run screenshot failed (page %d): %s", idx, e)
+                return
             entry = {
                 'url': url,
+                'page_title': title,
                 'screenshot': f'/static/uploads/manual_runs/{self.run_id}/{filename}',
                 'captured_at': datetime.utcnow().isoformat(),
                 'source': source,
@@ -470,7 +562,8 @@ class _ManualSession:
         """
         Audit one page the tester visited. Returns how many issues were found.
 
-        Only the checks that are meaningful here are run:
+        Evidence/assistance only: results are shown next to the tester's own
+        observations and never decide the manual verdict.
 
         - Security headers are skipped. A manual session has no response
           headers to inspect, and running the check with none would report
@@ -486,27 +579,73 @@ class _ManualSession:
         # Imported here to avoid a circular import at module load.
         from modules.runner.routes import (
             check_missing_alt, check_seo, check_accessibility, check_broken_links,
+            filter_console_errors,
         )
+        try:
+            from modules.runner.extended_checks import (
+                check_page_resources, check_ui_consistency, check_code_quality,
+                check_url_health,
+            )
+        except Exception:
+            check_page_resources = check_ui_consistency = None
+            check_code_quality = check_url_health = None
 
         findings = {}
         try:
             findings['missing_alt_images'] = check_missing_alt(page)
             findings['seo_issues'] = check_seo(page, url)
             findings['accessibility_issues'], _engine = check_accessibility(page)
+            try:
+                with self._lock:
+                    pending_console = list(self._console)
+                    self._console.clear()
+                real = filter_console_errors(pending_console)
+                findings['console_errors'] = [
+                    {**m, 'severity': 'serious', 'element_selector': 'console',
+                     'parent_context': ''} for m in real
+                ]
+            except Exception:
+                pass
+            if check_url_health is not None:
+                try:
+                    findings['url_issues'] = check_url_health(url, 200, {})
+                except Exception:
+                    pass
+            if check_ui_consistency is not None:
+                try:
+                    findings['ui_issues'] = check_ui_consistency(page)
+                except Exception:
+                    pass
+            if check_code_quality is not None:
+                try:
+                    findings['code_issues'] = check_code_quality(page)
+                except Exception:
+                    pass
             if deep:
                 findings['broken_links'], _cov = check_broken_links(page, url)
+                if check_page_resources is not None:
+                    try:
+                        extra, _rc = check_page_resources(page, url)
+                        findings['broken_links'] = (findings['broken_links'] or []) + (extra or [])
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning("manual-run auto-check failed on %s: %s", url, e)
             return 0
 
         count = 0
         with self._lock:
+            try:
+                title = self.current_title
+            except Exception:
+                title = ''
             for category, items in findings.items():
                 for item in items or []:
                     if isinstance(item, dict):
                         item['category'] = category
                         item['page_url'] = url
-                        item['source'] = 'automatic'
+                        item['page_title'] = title
+                        item['source'] = 'AUTOMATED'
                     self.auto_findings.append(item)
                     count += 1
             self.auto_checked_pages += 1
@@ -660,6 +799,10 @@ def summarise_manual(session_snapshot):
         'auto_findings_total': session_snapshot.get('auto_findings_count', 0),
         'expected_met': expected_met,
         'summary': summary[:1] .upper() + summary[1:] if summary else summary,
+        # The manual verdict depends ONLY on these three. Automated
+        # background evidence is shown alongside but never overrides them.
+        'verdict_basis': ['step_results', 'expected_result_decision', 'reported_issues'],
+        'automated_evidence_excluded_from_verdict': True,
     }
 
 
@@ -668,6 +811,8 @@ def start(testcase_id, project_id, base_url, max_pages=25,
     """Open the headed window for a manual run. Returns (ok, message, snapshot)."""
     if not base_url:
         return False, 'Project has no base URL to open', None
+    if not str(base_url).startswith(('http://', 'https://')):
+        return False, 'Project URL must start with http:// or https://', None
 
     with _lock:
         existing = _active.get(testcase_id)
@@ -735,6 +880,17 @@ def autocrawl(testcase_id):
         return False, f'Cannot start auto-crawl from status: {sess.status}'
     sess.signal_autocrawl()
     return True, 'Auto-crawl started.'
+
+
+def pause(testcase_id, paused=True):
+    """Pause or resume a live manual session without closing the browser."""
+    with _lock:
+        sess = _active.get(testcase_id)
+    if not sess or not sess.is_alive():
+        return False, 'No active manual run for this test case.', None
+    sess.set_paused(paused)
+    return True, ('Paused — capture is suspended, browser stays open.'
+                  if paused else 'Resumed — capture restarted.'), sess.snapshot()
 
 
 def cancel(testcase_id):

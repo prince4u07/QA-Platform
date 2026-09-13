@@ -6,9 +6,10 @@ const API_URL = '/reports';
 export const getSummary = () =>
   axios.get(`${API_URL}/summary`, getAuthHeader());
 
-// Findings from the latest run for each test case
-export const getDetectedIssues = () =>
-  axios.get(`${API_URL}/detected-issues`, getAuthHeader());
+// Findings from the latest run for each test case.
+// Optional source filter: 'MANUAL' | 'AUTOMATED'.
+export const getDetectedIssues = (source = '') =>
+  axios.get(`${API_URL}/detected-issues${source ? `?source=${source}` : ''}`, getAuthHeader());
 
 // Health score over time (line chart)
 export const getHealthTrend = () =>

@@ -17,9 +17,9 @@ import {
   updateTestCase,
   deleteTestCase,
 } from '../api/testcases';
-import { runTestCaseAsync, getRunJob, cancelRunJob, getTestRuns, getCrawledPages,
-  startManualRun, getManualRunStatus, finishManualRun, cancelManualRun,
-  markManualStep, reportManualIssue } from '../api/runner';
+import { runTestCaseAsync, getRunJob, cancelRunJob, retryTestCase, getTestRuns, getCrawledPages,
+  startManualRun, getManualRunStatus, finishManualRun, cancelManualRun, pauseManualRun,
+  autoCrawlManualRun, markManualStep, reportManualIssue } from '../api/runner';
 import { createBugsFromTestRun } from '../api/bugs';
 import { imgUrl } from '../api/axiosConfig';
 
@@ -69,6 +69,11 @@ const CATEGORY_META = {
   functional_issues: { Icon: XCircle, label: 'Functional Failures', tone: 'text-red-200 bg-red-500/25' },
   api_issues: { Icon: Network, label: 'API Failures', tone: 'text-red-300 bg-red-500/15' },
   validation_issues: { Icon: AlertTriangle, label: 'Form Validation', tone: 'text-amber-300 bg-amber-500/15' },
+  url_issues: { Icon: Link2, label: 'URL Problems', tone: 'text-red-300 bg-red-500/15' },
+  ui_issues: { Icon: Accessibility, label: 'Interface Defects', tone: 'text-amber-300 bg-amber-500/15' },
+  code_issues: { Icon: Bug, label: 'Code Quality', tone: 'text-amber-300 bg-amber-500/15' },
+  mobile_issues: { Icon: Accessibility, label: 'Mobile Usability', tone: 'text-amber-300 bg-amber-500/15' },
+  execution_errors: { Icon: XCircle, label: 'Audit Incomplete', tone: 'text-slate-300 bg-white/10' },
 };
 
 // Severity is now graded per finding, not per category, so show it.
@@ -423,8 +428,13 @@ const TestCases = () => {
   // Tester workspace: the issue being written up, and the verdict on whether
   // what they saw matched what the business asked for.
   const [issueTitle, setIssueTitle] = useState('');
-  const [issueCategory, setIssueCategory] = useState('layout');
+  const [issueCategory, setIssueCategory] = useState('functional');
   const [issueSeverity, setIssueSeverity] = useState('moderate');
+  const [issueDescription, setIssueDescription] = useState('');
+  const [issueExpected, setIssueExpected] = useState('');
+  const [issueActual, setIssueActual] = useState('');
+  const [issueStep, setIssueStep] = useState('');
+  const [activeStepIdx, setActiveStepIdx] = useState(0);
   const [expectedMet, setExpectedMet] = useState(null);
 
   const [convertingToBugs, setConvertingToBugs] = useState(false);
@@ -689,7 +699,7 @@ const TestCases = () => {
         throw new Error(data.error || 'Test run failed');
       }
       const result = data.result || {};
-      setRunResult({ ...result, testCaseTitle: tc.title });
+      setRunResult({ ...result, testCaseTitle: tc.title, testCaseId: tc.id });
       setShowResultModal(true);
       // A cancelled crawl is not a verdict: leave the test case's status
       // as it was instead of stamping it 'Cancelled'.
@@ -701,6 +711,7 @@ const TestCases = () => {
     } catch (err) {
       setRunResult({
         testCaseTitle: tc.title,
+        testCaseId: tc.id,
         status: 'Fail',
         health_score: 0,
         issues_found: 0,
@@ -804,15 +815,45 @@ const TestCases = () => {
   const reportIssue = async () => {
     if (!manualRunFor || issueTitle.trim().length < 3) return;
     try {
+      const stepIndex = issueStep === '' ? null
+        : (Number.isInteger(Number(issueStep)) ? Number(issueStep) : null);
       const res = await reportManualIssue(manualRunFor.id, {
         title: issueTitle.trim(),
+        description: issueDescription.trim(),
         category: issueCategory,
         severity: issueSeverity,
+        expected_result: issueExpected.trim(),
+        actual_result: issueActual.trim(),
+        step_index: stepIndex,
       });
       setManualSnap(res.data.run);
       setIssueTitle('');
+      setIssueDescription('');
+      setIssueExpected('');
+      setIssueActual('');
+      setIssueStep('');
     } catch (err) {
       setManualMessage(err.response?.data?.error || 'Could not record that issue.');
+    }
+  };
+
+  const togglePauseManual = async () => {
+    if (!manualRunFor) return;
+    try {
+      const res = await pauseManualRun(manualRunFor.id, !manualSnap?.paused);
+      setManualSnap(res.data.run);
+    } catch (err) {
+      setManualMessage(err.response?.data?.error || 'Could not pause the session.');
+    }
+  };
+
+  const triggerAutoCrawl = async () => {
+    if (!manualRunFor) return;
+    try {
+      await autoCrawlManualRun(manualRunFor.id);
+      setManualMessage('Auto-crawl started from the current page.');
+    } catch (err) {
+      setManualMessage(err.response?.data?.error || 'Could not start auto-crawl.');
     }
   };
 
@@ -870,6 +911,20 @@ const TestCases = () => {
       setManualNote('');
       setManualBusy(false);
     }
+  };
+
+  const handleRetryRun = async () => {
+    const tcId = runResult?.testCaseId;
+    if (!tcId) return;
+    setShowResultModal(false);
+    const tc = testCases.find((t) => t.id === tcId);
+    if (!tc) return;
+    try {
+      await retryTestCase(tcId);
+    } catch {
+      /* fall through to a normal run */
+    }
+    handleRun(tc);
   };
 
   const handleConvertToBugs = async () => {
@@ -1112,11 +1167,24 @@ const TestCases = () => {
                       </button>
                     );
                   })()}
-                  {runningIds.has(tc.id) && runProgressMap.get(tc.id)?.current && (
-                    <span className="text-xs text-slate-400 truncate max-w-[220px]" title={runProgressMap.get(tc.id).current}>
-                      {runProgressMap.get(tc.id).current}
-                    </span>
-                  )}
+                  {runningIds.has(tc.id) && (() => {
+                    const p = runProgressMap.get(tc.id);
+                    if (!p) return null;
+                    const cur = p.current_page || p.current;
+                    return (
+                      <span className="text-xs text-slate-400 truncate max-w-[320px]"
+                        title={[
+                          cur,
+                          p.current_category ? `stage: ${p.current_category}` : null,
+                          typeof p.pages_tested === 'number' ? `pages ${p.pages_tested}/${p.total}` : null,
+                        ].filter(Boolean).join(' · ')}>
+                        {typeof p.pages_tested === 'number' && typeof p.total === 'number'
+                          ? `${p.pages_tested}/${p.total} · ` : ''}
+                        {cur || p.phase || 'Working…'}
+                        {p.current_category ? ` (${p.current_category})` : ''}
+                      </span>
+                    );
+                  })()}
                   {runningIds.has(tc.id) && runJobIds.has(tc.id) && (
                     <button
                       onClick={() => handleCancelRun(tc.id)}
@@ -1420,6 +1488,17 @@ const TestCases = () => {
               <div>
                 <h2 className="text-xl font-display font-bold text-white">Test Run Results</h2>
                 <p className="text-sm text-slate-400 mt-1">{runResult.testCaseTitle}</p>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-brand-indigo/20 text-brand-indigo">
+                    {runResult.run_type || 'AUTOMATED'}
+                  </span>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-white/10 text-slate-300">
+                    {runResult.execution_mode || 'HEADLESS'} · {runResult.source || 'MACHINE'}
+                  </span>
+                </div>
+                {runResult.verdict_reason && (
+                  <p className="text-xs text-slate-400 mt-1">{runResult.verdict_reason}</p>
+                )}
                 {runResult.is_multi_page && (
                   <p className="inline-flex items-center gap-1.5 text-xs text-brand-sky mt-1">
                     <Network className="w-3.5 h-3.5" /> Tested {runResult.pages_tested} pages on this site
@@ -1463,7 +1542,25 @@ const TestCases = () => {
                         <p className="text-slate-300 text-sm">
                           {runResult.issues_found} issue{runResult.issues_found !== 1 ? 's' : ''} detected
                           {runResult.is_multi_page ? ' across ' + runResult.pages_tested + ' pages' : ''}
+                          {(runResult.critical_issues || runResult.major_issues || runResult.minor_issues) ? (
+                            <span className="text-slate-400">
+                              {` · ${runResult.critical_issues || 0} critical · ${runResult.major_issues || 0} major · ${runResult.minor_issues || 0} minor`}
+                            </span>
+                          ) : null}
                         </p>
+                        {(runResult.links_checked != null || runResult.api_endpoints_tested != null) && (
+                          <p className="text-slate-400 text-xs mt-1">
+                            {runResult.links_checked != null && (
+                              <span>Links tested: {runResult.links_checked}{runResult.links_found != null ? `/${runResult.links_found}` : ''} · </span>
+                            )}
+                            {runResult.api_endpoints_tested != null && (
+                              <span>API endpoints: {runResult.api_endpoints_tested} · </span>
+                            )}
+                            {runResult.pages_discovered != null && (
+                              <span>Pages discovered: {runResult.pages_discovered}</span>
+                            )}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1540,6 +1637,18 @@ const TestCases = () => {
               {runResult.error_message && (
                 <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 rounded-xl">
                   <strong>Error:</strong> {runResult.error_message}
+                  <button onClick={handleRetryRun}
+                    className="ml-3 text-xs px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200">
+                    Retry run
+                  </button>
+                </div>
+              )}
+              {runResult.status === 'Fail' && !runResult.error_message && runResult.testCaseId && (
+                <div>
+                  <button onClick={handleRetryRun}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200">
+                    Retry this run
+                  </button>
                 </div>
               )}
 
@@ -1624,12 +1733,37 @@ const TestCases = () => {
               <div className="flex-1">
                 <div className="text-lg font-semibold text-white">Manual Test: {manualRunFor.title}</div>
                 <div className="text-xs text-slate-400">
-                  Status:&nbsp;
-                  <span className="text-brand-teal">{manualSnap?.status || 'starting'}</span>
+                  Browser:&nbsp;
+                  <span className="text-brand-teal">
+                    {manualSnap?.paused ? 'paused (HEADED)' : `${manualSnap?.status || 'starting'} (HEADED)`}
+                  </span>
                   &nbsp;·&nbsp;Pages captured:&nbsp;
-                  <span className="text-white">{manualSnap?.pages_visited ?? 0}</span>
+                  <span className="text-white">{manualSnap?.pages_visited ?? 0}/{manualSnap?.max_pages ?? '–'}</span>
+                  &nbsp;·&nbsp;Steps:&nbsp;
+                  <span className="text-white">{manualSnap?.steps_done ?? 0}/{manualSnap?.steps_total ?? 0}</span>
+                  {typeof manualSnap?.progress_pct === 'number' && (
+                    <span className="text-white"> ({manualSnap.progress_pct}%)</span>
+                  )}
                 </div>
+                {manualSnap?.current_url && (
+                  <div className="text-xs text-slate-500 truncate mt-0.5">
+                    Current URL: <span className="text-slate-300">{manualSnap.current_url}</span>
+                    {manualSnap?.current_title && (
+                      <span> · {manualSnap.current_title}</span>
+                    )}
+                  </div>
+                )}
+                {typeof manualSnap?.progress_pct === 'number' && (
+                  <div className="h-1.5 rounded bg-white/10 mt-2 overflow-hidden">
+                    <div className="h-full bg-brand-teal rounded"
+                      style={{ width: `${manualSnap.progress_pct}%` }} />
+                  </div>
+                )}
               </div>
+              <button onClick={togglePauseManual} disabled={manualBusy || !manualSnap}
+                className="text-slate-300 hover:text-white text-sm px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10">
+                {manualSnap?.paused ? 'Resume' : 'Pause'}
+              </button>
               <button onClick={cancelManual} disabled={manualBusy}
                 className="text-slate-400 hover:text-white text-sm px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10">
                 Close & discard
@@ -1665,17 +1799,53 @@ const TestCases = () => {
               ) : (
                 <span className="text-sm text-slate-400">Launching browser…</span>
               )}
+              {manualSnap?.status === 'ready' && !manualSnap?.paused && (
+                <button onClick={triggerAutoCrawl}
+                  className="ml-auto text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200">
+                  Auto-crawl from here
+                </button>
+              )}
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2">
+              {/* Live browser state: what the tester is looking at right now. */}
+              {manualSnap?.current_screenshot && (
+                <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-3">
+                  <h3 className="text-sm font-semibold text-slate-100 mb-2">Current page</h3>
+                  <a href={imgUrl(manualSnap.current_screenshot)} target="_blank" rel="noreferrer">
+                    <img src={imgUrl(manualSnap.current_screenshot)} alt=""
+                      className="w-full max-h-56 object-cover rounded border border-white/10" />
+                  </a>
+                </div>
+              )}
+
+              {/* HUMAN OBSERVATION — the tester's own verdict and notes. */}
+              <div className="mb-1 text-xs font-semibold tracking-wide text-brand-teal">
+                HUMAN OBSERVATION (decides the verdict)
+              </div>
               {/* The written steps, as a checklist to work through. */}
               {(manualSnap?.steps || []).length > 0 && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="text-sm font-semibold text-slate-100">Checklist</h3>
-                    <span className="text-xs text-slate-500">
-                      {manualSnap.steps_done}/{manualSnap.steps_total} checked
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setActiveStepIdx((i) => Math.max(0, i - 1))}
+                        disabled={activeStepIdx <= 0}
+                        className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-slate-300 disabled:opacity-40">
+                        ← Prev
+                      </button>
+                      <span className="text-xs text-slate-500">
+                        {manualSnap.steps_total ? `${Math.min(activeStepIdx + 1, manualSnap.steps_total)}/${manualSnap.steps_total}` : '0/0'}
+                        {' · '}{manualSnap.steps_done}/{manualSnap.steps_total} checked
+                      </span>
+                      <button
+                        onClick={() => setActiveStepIdx((i) => Math.min((manualSnap.steps_total || 1) - 1, i + 1))}
+                        disabled={activeStepIdx >= (manualSnap.steps_total || 1) - 1}
+                        className="text-xs px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-slate-300 disabled:opacity-40">
+                        Next →
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-1">
                     {manualSnap.steps.map((s) => (
@@ -1728,6 +1898,18 @@ const TestCases = () => {
                 <input value={issueTitle} onChange={(e) => setIssueTitle(e.target.value)}
                   placeholder="What is wrong? e.g. Pay button overlaps the total"
                   className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 mb-2 focus:outline-none focus:border-brand-indigo" />
+                <textarea value={issueDescription} onChange={(e) => setIssueDescription(e.target.value)}
+                  placeholder="Description (what did you observe?)"
+                  rows={2}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 mb-2 focus:outline-none focus:border-brand-indigo" />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+                  <input value={issueExpected} onChange={(e) => setIssueExpected(e.target.value)}
+                    placeholder="Expected behavior"
+                    className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-brand-indigo" />
+                  <input value={issueActual} onChange={(e) => setIssueActual(e.target.value)}
+                    placeholder="Actual behavior"
+                    className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-brand-indigo" />
+                </div>
                 <div className="flex gap-2 flex-wrap">
                   <select value={issueCategory} onChange={(e) => setIssueCategory(e.target.value)}
                     className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none">
@@ -1741,6 +1923,16 @@ const TestCases = () => {
                       <option key={s} value={s} className="bg-slate-900">{s}</option>
                     ))}
                   </select>
+                  <select value={issueStep} onChange={(e) => setIssueStep(e.target.value)}
+                    title="Link to a test step"
+                    className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none">
+                    <option value="" className="bg-slate-900">No step link</option>
+                    {(manualSnap?.steps || []).map((s) => (
+                      <option key={s.index} value={s.index} className="bg-slate-900">
+                        Step {s.index + 1}
+                      </option>
+                    ))}
+                  </select>
                   <button onClick={reportIssue} disabled={issueTitle.trim().length < 3}
                     className="ml-auto text-sm px-3 py-1.5 rounded-lg bg-brand-gradient text-white disabled:opacity-40 disabled:cursor-not-allowed">
                     Add issue
@@ -1750,12 +1942,44 @@ const TestCases = () => {
                   <div className="mt-2 space-y-1">
                     {manualSnap.reported.map((r) => (
                       <div key={r.index} className="text-xs text-slate-300 flex gap-2">
+                        <span className="px-1.5 py-0.5 rounded bg-brand-teal/20 text-brand-teal font-semibold">
+                          MANUAL
+                        </span>
                         <span className={'px-1.5 py-0.5 rounded ' + (SEVERITY_TONE[r.severity] || '')}>
                           {r.severity}
                         </span>
                         <span className="flex-1 break-words">{r.title}</span>
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+
+              {/* AUTOMATED EVIDENCE — machine assistance, never the verdict. */}
+              <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className="text-sm font-semibold text-slate-100">Automated evidence</h3>
+                  <span className="text-xs text-slate-500">
+                    {manualSnap?.auto_findings_count || 0} findings · assistance only
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mb-2">
+                  Collected in the background (console, alt text, SEO, accessibility, links, URL/UI/code).
+                  These do not decide Pass/Fail.
+                </p>
+                {(manualSnap?.auto_findings || []).slice(0, 8).map((f, i) => (
+                  <div key={i} className="text-xs text-slate-400 flex gap-2 py-0.5">
+                    <span className="px-1.5 py-0.5 rounded bg-brand-sky/20 text-brand-sky font-semibold">
+                      AUTOMATED
+                    </span>
+                    <span className="flex-1 break-words">
+                      {(f.display || f.issue || 'Finding')}{f.page_url ? ` — ${f.page_url}` : ''}
+                    </span>
+                  </div>
+                ))}
+                {(manualSnap?.auto_findings || []).length > 8 && (
+                  <div className="text-xs text-slate-500 mt-1">
+                    +{(manualSnap.auto_findings.length - 8)} more in the saved run.
                   </div>
                 )}
               </div>
