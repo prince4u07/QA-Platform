@@ -60,8 +60,19 @@ const Dashboard = () => {
     projects: 0,
     testCases: 0,
     bugs: 0,
-    passed: 0
+    passed: 0,
+    totalRuns: 0,
+    manualRuns: 0,
+    automatedRuns: 0,
+    failed: 0,
+    critical: 0,
+    avgHealth: 0,
+    automationCoverage: 0,
   });
+  const [runTypeFilter, setRunTypeFilter] = useState('');
+  const [severityFilter, setSeverityFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [filteredRuns, setFilteredRuns] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -75,11 +86,27 @@ const Dashboard = () => {
         const res = await axios.get('/projects/stats', {
           headers: { Authorization: `Bearer ${token}` }
         });
+        let summary = {};
+        try {
+          const s = await axios.get('/reports/summary', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          summary = s.data || {};
+        } catch {
+          summary = {};
+        }
         setStats({
           projects: res.data.total_projects,
           testCases: res.data.total_testcases,
           bugs: res.data.open_bugs,
-          passed: res.data.tests_passed
+          passed: res.data.tests_passed,
+          totalRuns: summary.total_runs ?? 0,
+          manualRuns: summary.manual_runs ?? 0,
+          automatedRuns: summary.automated_runs ?? 0,
+          failed: summary.failed ?? 0,
+          critical: summary.critical_issues ?? 0,
+          avgHealth: summary.avg_health_score ?? 0,
+          automationCoverage: summary.automation_coverage ?? 0,
         });
       } catch (error) {
         console.error('Failed to load stats', error);
@@ -94,6 +121,26 @@ const Dashboard = () => {
 
     fetchStats();
   }, [token, navigate]);
+
+  useEffect(() => {
+    if (!token) return;
+    const load = async () => {
+      try {
+        const q = new URLSearchParams({
+          ...(runTypeFilter ? { run_type: runTypeFilter } : {}),
+          ...(severityFilter ? { severity: severityFilter } : {}),
+          ...(statusFilter ? { status: statusFilter } : {}),
+        }).toString();
+        const res = await axios.get(`/reports/run-stats${q ? `?${q}` : ''}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setFilteredRuns(res.data);
+      } catch {
+        setFilteredRuns(null);
+      }
+    };
+    load();
+  }, [token, runTypeFilter, severityFilter, statusFilter]);
 
   const v = (n) => (loading ? '—' : n);
 
@@ -123,6 +170,57 @@ const Dashboard = () => {
           <StatCard icon={Bug} label="Open Bugs" value={v(stats.bugs)} accent="bg-rose-500/15 text-rose-400" delay={0.1} />
           <StatCard icon={CheckCircle2} label="Tests Passed" value={v(stats.passed)} accent="bg-brand-teal/15 text-brand-teal" delay={0.15} />
         </div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.15 }}
+          className="glass rounded-2xl p-6 mb-8"
+        >
+          <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+            <div>
+              <h3 className="text-xl font-display font-bold text-white">Run Statistics</h3>
+              <p className="text-sm text-slate-500">
+                {v(stats.totalRuns)} total runs · {v(stats.manualRuns)} manual · {v(stats.automatedRuns)} automated · {v(stats.failed)} failed · {v(stats.critical)} critical open · avg health {v(stats.avgHealth)} · automation {v(stats.automationCoverage)}%
+              </p>
+            </div>
+            <select value={runTypeFilter} onChange={(e) => setRunTypeFilter(e.target.value)}
+              className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
+              <option value="" className="bg-slate-900">All runs</option>
+              <option value="MANUAL" className="bg-slate-900">Manual only</option>
+              <option value="AUTOMATED" className="bg-slate-900">Automated only</option>
+            </select>
+            <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}
+              className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
+              <option value="" className="bg-slate-900">Any severity</option>
+              <option value="critical" className="bg-slate-900">Critical</option>
+              <option value="serious" className="bg-slate-900">Serious</option>
+              <option value="moderate" className="bg-slate-900">Moderate</option>
+              <option value="minor" className="bg-slate-900">Minor</option>
+            </select>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+              className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
+              <option value="" className="bg-slate-900">Any status</option>
+              <option value="Pass" className="bg-slate-900">Passed</option>
+              <option value="Fail" className="bg-slate-900">Failed</option>
+            </select>
+          </div>
+          {filteredRuns && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+              {[
+                ['Total', filteredRuns.total],
+                ['Passed', filteredRuns.passed],
+                ['Failed', filteredRuns.failed],
+                ['Avg health', filteredRuns.avg_health_score],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="text-xs text-slate-500">{label}{runTypeFilter ? ` (${runTypeFilter})` : ''}</div>
+                  <div className="text-xl font-bold text-white">{value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
 
         <motion.div
           initial={{ opacity: 0, y: 12 }}

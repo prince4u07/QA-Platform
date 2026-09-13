@@ -14,6 +14,10 @@ export const getRunJob = (jobId) =>
 export const cancelRunJob = (jobId) =>
   axios.post(`${API_URL}/job/${jobId}/cancel`, {}, getAuthHeader());
 
+// Retry a failed automated run as a fresh job.
+export const retryTestCase = (testCaseId) =>
+  axios.post(`${API_URL}/run/${testCaseId}/retry`, {}, getAuthHeader());
+
 // ---- Manual (tracked) test run ----
 // Opens a headed browser at the project URL; captures a screenshot on every
 // page navigation so the user's manual walkthrough leaves auditable evidence.
@@ -34,9 +38,13 @@ export const autoCrawlManualRun = (testCaseId) =>
   axios.post(`${API_URL}/manual/${testCaseId}/autocrawl`, {}, getAuthHeader());
 
 // Tick one checklist step off while testing by hand.
-export const markManualStep = (testCaseId, index, status, note = '') =>
+export const markManualStep = (testCaseId, index, status, note = '', issueRef = null) =>
   axios.post(`${API_URL}/manual/${testCaseId}/step/${index}`,
-    { status, note }, getAuthHeader());
+    { status, note, issue_ref: issueRef }, getAuthHeader());
+
+// Pause / resume the live manual session without closing the browser.
+export const pauseManualRun = (testCaseId, paused = true) =>
+  axios.post(`${API_URL}/manual/${testCaseId}/pause`, { paused }, getAuthHeader());
 
 // Report something spotted by eye, against the page currently on screen.
 export const reportManualIssue = (testCaseId, issue) =>
