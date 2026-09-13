@@ -124,7 +124,8 @@ def test_tester_reports_a_layout_flaw_against_the_current_page(session):
 
 
 def test_the_categories_cover_what_a_manual_tester_actually_looks_for():
-    for expected in ('layout', 'design', 'functional', 'business', 'broken-link'):
+    for expected in ('functional', 'ui-ux', 'layout', 'accessibility', 'content',
+                     'business-logic', 'performance', 'broken-link', 'other'):
         assert expected in ISSUE_CATEGORIES
 
 

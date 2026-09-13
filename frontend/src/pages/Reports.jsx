@@ -75,7 +75,8 @@ const Reports = () => {
   const [recentRuns, setRecentRuns] = useState([]);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [pdfError, setPdfError] = useState('');
-  // Bumped by the Refresh button to re-run the report load effect.
+  const [sourceFilter, setSourceFilter] = useState('');
+  // Bumped by the Refresh button to re-fetch the test case list from outside the effect.
   const [reloadFlag, setReloadFlag] = useState(0);
   const reloadReports = () => setReloadFlag((f) => f + 1);
 
@@ -91,7 +92,7 @@ const Reports = () => {
       try {
         const responses = await Promise.allSettled([
           getSummary(),
-          getDetectedIssues(),
+          getDetectedIssues(sourceFilter),
           getHealthTrend(),
           getBugBreakdown(),
           getTopCategories(),
@@ -137,7 +138,7 @@ const Reports = () => {
     };
 
     loadAllReports();
-  }, [navigate, reloadFlag]);
+  }, [navigate, reloadFlag, sourceFilter]);
 
   const handleExportPDF = async () => {
     setExportingPdf(true);
@@ -297,11 +298,19 @@ const Reports = () => {
             )}
 
             <div className="glass rounded-2xl p-5 mb-6">
-              <div className="flex justify-between items-center mb-4">
+              <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
                 <h2 className="text-lg font-display font-bold text-white flex items-center gap-2">
                   <Bug className="w-4 h-4 text-red-400" /> Detected Issues
                 </h2>
-                <span className="text-xs text-slate-500">Latest run per test case</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500">Latest run per test case</span>
+                  <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}
+                    className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none">
+                    <option value="" className="bg-slate-900">All sources</option>
+                    <option value="MANUAL" className="bg-slate-900">Manual only</option>
+                    <option value="AUTOMATED" className="bg-slate-900">Automated only</option>
+                  </select>
+                </div>
               </div>
               {detectedIssues.length === 0 ? (
                 <div className="text-center py-8 text-slate-500 text-sm">No issues detected in the latest runs.</div>
@@ -310,7 +319,12 @@ const Reports = () => {
                   {detectedIssues.slice(0, 12).map((finding) => (
                     <div key={finding.id} className="flex items-start justify-between gap-4 p-3 bg-white/5 border border-white/10 rounded-xl">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-100">{finding.issue}</p>
+                        <p className="text-sm font-medium text-slate-100">
+                          <span className={'inline-block text-[10px] font-bold px-1.5 py-0.5 rounded mr-2 ' + (finding.source === 'MANUAL' ? 'bg-brand-teal/20 text-brand-teal' : 'bg-brand-sky/20 text-brand-sky')}>
+                            {finding.source || 'AUTOMATED'}
+                          </span>
+                          {finding.issue}
+                        </p>
                         <p className="text-xs text-slate-500 mt-1">{finding.project_name} · {finding.test_case_title}{finding.location ? ' · ' + finding.location : ''}</p>
                       </div>
                       <span className="text-xs font-semibold text-red-300 whitespace-nowrap">{finding.severity}</span>

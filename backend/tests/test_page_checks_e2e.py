@@ -105,7 +105,7 @@ def test_single_page_returns_every_category_and_coverage(browser_page, site):
     expected = {'broken_links', 'console_errors', 'missing_alt_images', 'seo_issues',
                 'security_issues', 'accessibility_issues', 'mobile_issues',
                 'performance_issues', 'functional_issues', 'api_issues',
-                'validation_issues'}
+                'validation_issues', 'url_issues', 'ui_issues', 'code_issues'}
     assert set(findings) == expected
     # A page audit cannot judge whether the feature works; the runner fills
     # this in from the test case's executed steps.
@@ -151,7 +151,7 @@ def test_manual_auto_check_finds_issues_without_inventing_them(browser_page, sit
     assert 'mobile_issues' not in categories, 'desktop window, tap-target sizes are meaningless'
     # The cheap in-page checks must still run while the tester browses.
     assert 'accessibility_issues' in categories or 'missing_alt_images' in categories
-    assert all(f.get('source') == 'automatic' for f in session.auto_findings)
+    assert all(f.get('source') == 'AUTOMATED' for f in session.auto_findings)
 
 
 def test_manual_deep_check_adds_link_checking(browser_page, site):

@@ -26,8 +26,11 @@ def init_reports(app_mysql):
     mysql = app_mysql
 
 
-def _latest_detected_findings(user_id):
-    """Return the findings from each user's latest run per test case."""
+def _latest_detected_findings(user_id, source_filter=None):
+    """Return the findings from each user's latest run per test case.
+
+    `source_filter` optionally restricts to 'MANUAL' or 'AUTOMATED'.
+    """
     cursor = mysql.connection.cursor()
     cursor.execute(
         """SELECT tr.id, tr.findings_evidence, tc.title AS test_case_title,
@@ -52,7 +55,8 @@ def _latest_detected_findings(user_id):
     findings = []
     bookkeeping = {
         'manual', 'note', 'pages', 'steps', 'summary',
-        'expected_result', 'expected_met',
+        'expected_result', 'expected_met', 'run_type', 'execution_mode',
+        'source', 'verdict_reason',
     }
     for run in runs:
         try:
@@ -69,16 +73,23 @@ def _latest_detected_findings(user_id):
                     label = item.get('issue') or item.get('display') or 'Issue detected'
                     severity = item.get('severity', 'moderate').capitalize()
                     location = item.get('url') or item.get('page_url') or ''
+                    source = (item.get('source') or 'AUTOMATED').upper()
+                    if source == 'TESTER':
+                        source = 'MANUAL'
                 else:
                     label = str(item)
                     severity = 'Moderate'
                     location = ''
+                    source = 'AUTOMATED'
+                if source_filter and source != source_filter:
+                    continue
                 findings.append({
                     'id': f"{run['id']}-{category}-{len(findings)}",
                     'category': category,
                     'issue': label,
                     'severity': severity,
                     'location': location,
+                    'source': source,
                     'test_case_title': run['test_case_title'],
                     'project_name': run['project_name'],
                 })
@@ -158,12 +169,75 @@ def _build_summary(user_id):
     avg_resolution_days = round(avg_hours / 24, 1) if avg_hours > 0 else 0
     resolution_rate = round((resolved / total_bugs * 100) if total_bugs > 0 else 0, 1)
 
+    # Run-type split: guarded so databases without the new columns
+    # (pre-migration) still return the base summary.
+    manual_runs = automated_runs = passed = failed = critical = 0
+    automation_coverage = 0
+    try:
+        cursor.execute(
+            """SELECT
+                 SUM(CASE WHEN tr.run_type = 'MANUAL' THEN 1 ELSE 0 END) AS manual,
+                 SUM(CASE WHEN tr.run_type != 'MANUAL' THEN 1 ELSE 0 END) AS automated,
+                 SUM(CASE WHEN tr.status = 'Pass' THEN 1 ELSE 0 END) AS passed,
+                 SUM(CASE WHEN tr.status = 'Fail' THEN 1 ELSE 0 END) AS failed
+               FROM test_runs tr
+               JOIN test_cases tc ON tr.test_case_id = tc.id
+               JOIN projects p ON tc.project_id = p.id
+               WHERE p.user_id = %s""",
+            (user_id,)
+        )
+        row = cursor.fetchone() or {}
+        manual_runs = int(row.get('manual') or 0)
+        automated_runs = int(row.get('automated') or 0)
+        passed = int(row.get('passed') or 0)
+        failed = int(row.get('failed') or 0)
+        total = manual_runs + automated_runs
+        automation_coverage = round(automated_runs / total * 100, 1) if total else 0
+    except Exception:
+        try:
+            cursor.execute(
+                """SELECT
+                     SUM(CASE WHEN tr.status = 'Pass' THEN 1 ELSE 0 END) AS passed,
+                     SUM(CASE WHEN tr.status = 'Fail' THEN 1 ELSE 0 END) AS failed,
+                     COUNT(*) AS total
+                   FROM test_runs tr
+                   JOIN test_cases tc ON tr.test_case_id = tc.id
+                   JOIN projects p ON tc.project_id = p.id
+                   WHERE p.user_id = %s""",
+                (user_id,)
+            )
+            row = cursor.fetchone() or {}
+            passed = int(row.get('passed') or 0)
+            failed = int(row.get('failed') or 0)
+            automated_runs = int(row.get('total') or 0)
+        except Exception:
+            pass
+    try:
+        cursor.execute(
+            """SELECT COUNT(*) AS c FROM bugs b
+               LEFT JOIN test_cases tc ON b.test_case_id = tc.id
+               LEFT JOIN projects p ON tc.project_id = p.id
+               WHERE (p.user_id = %s OR b.assigned_to = %s)
+                 AND b.severity = 'Critical' AND b.status NOT IN ('Resolved', 'Closed')""",
+            (user_id, user_id)
+        )
+        critical = int((cursor.fetchone() or {}).get('c') or 0)
+    except Exception:
+        pass
+
     cursor.close()
     return {
         'total_projects': total_projects,
         'total_testcases': total_testcases,
         'total_runs': total_runs,
+        'manual_runs': manual_runs,
+        'automated_runs': automated_runs,
+        'passed': passed,
+        'failed': failed,
+        'open_bugs': total_bugs - resolved,
+        'critical_issues': critical,
         'avg_health_score': avg_health,
+        'automation_coverage': automation_coverage,
         'total_bugs': total_bugs,
         'resolved_bugs': resolved,
         'resolution_rate': resolution_rate,
@@ -188,9 +262,96 @@ def summary():
 @reports_bp.route('/detected-issues', methods=['GET'])
 @jwt_required()
 def detected_issues():
+    from flask import request
     user_id = int(get_jwt_identity())
+    source = (request.args.get('source') or '').upper() or None
+    if source not in (None, 'MANUAL', 'AUTOMATED'):
+        return jsonify({'error': 'source must be MANUAL or AUTOMATED'}), 400
     try:
-        return jsonify(_latest_detected_findings(user_id)), 200
+        return jsonify(_latest_detected_findings(user_id, source)), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@reports_bp.route('/run-stats', methods=['GET'])
+@jwt_required()
+def run_stats():
+    """Dashboard statistics with filters.
+
+    Query params: run_type (MANUAL|AUTOMATED), project_id, test_case_id,
+    status (Pass|Fail), date_from, date_to (YYYY-MM-DD).
+    """
+    from flask import request
+    user_id = int(get_jwt_identity())
+    run_type = (request.args.get('run_type') or '').upper() or None
+    if run_type not in (None, 'MANUAL', 'AUTOMATED'):
+        return jsonify({'error': 'run_type must be MANUAL or AUTOMATED'}), 400
+    project_id = request.args.get('project_id')
+    test_case_id = request.args.get('test_case_id')
+    status = request.args.get('status')
+    severity = (request.args.get('severity') or '').lower() or None
+    if severity not in (None, 'critical', 'serious', 'moderate', 'minor'):
+        return jsonify({'error': 'severity must be critical, serious, moderate or minor'}), 400
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+    try:
+        cursor = mysql.connection.cursor()
+        conds = ["p.user_id = %s"]
+        params = [user_id]
+        has_run_type = True
+        has_severity = True
+        try:
+            cursor.execute("SELECT run_type, worst_severity FROM test_runs LIMIT 0")
+        except Exception:
+            has_run_type = has_severity = False
+        if run_type and has_run_type:
+            conds.append("tr.run_type = %s")
+            params.append(run_type)
+        if project_id:
+            conds.append("p.id = %s")
+            params.append(project_id)
+        if test_case_id:
+            conds.append("tc.id = %s")
+            params.append(test_case_id)
+        if status:
+            conds.append("tr.status = %s")
+            params.append(status)
+        if severity and has_severity:
+            conds.append("tr.worst_severity = %s")
+            params.append(severity)
+        if date_from:
+            conds.append("tr.run_at >= %s")
+            params.append(date_from)
+        if date_to:
+            conds.append("tr.run_at < DATE_ADD(%s, INTERVAL 1 DAY)")
+            params.append(date_to)
+        where = " AND ".join(conds)
+        cursor.execute(
+            f"""SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN tr.status = 'Pass' THEN 1 ELSE 0 END) AS passed,
+                       SUM(CASE WHEN tr.status = 'Fail' THEN 1 ELSE 0 END) AS failed,
+                       AVG(tr.health_score) AS avg_score
+                FROM test_runs tr
+                JOIN test_cases tc ON tr.test_case_id = tc.id
+                JOIN projects p ON tc.project_id = p.id
+                WHERE {where}""",
+            tuple(params)
+        )
+        row = cursor.fetchone() or {}
+        cursor.close()
+        total = int(row.get('total') or 0)
+        return jsonify({
+            'total': total,
+            'passed': int(row.get('passed') or 0),
+            'failed': int(row.get('failed') or 0),
+            'avg_health_score': round(float(row.get('avg_score') or 0)),
+            'filters': {
+                'run_type': run_type, 'project_id': project_id,
+                'test_case_id': test_case_id, 'status': status,
+                'severity': severity,
+                'date_from': date_from, 'date_to': date_to,
+            },
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -346,18 +507,32 @@ def recent_runs():
     user_id = int(get_jwt_identity())
     try:
         cursor = mysql.connection.cursor()
-        cursor.execute(
-            """SELECT tr.id, tr.status, tr.health_score, tr.issues_found,
-                      tr.duration_ms, tr.run_at,
-                      tc.title AS test_case_title,
-                      p.name AS project_name
-               FROM test_runs tr
-               JOIN test_cases tc ON tr.test_case_id = tc.id
-               JOIN projects p ON tc.project_id = p.id
-               WHERE p.user_id = %s
-               ORDER BY tr.run_at DESC LIMIT 10""",
-            (user_id,)
-        )
+        try:
+            cursor.execute(
+                """SELECT tr.id, tr.status, tr.health_score, tr.issues_found,
+                          tr.duration_ms, tr.run_at, tr.run_type, tr.worst_severity,
+                          tc.title AS test_case_title,
+                          p.name AS project_name
+                   FROM test_runs tr
+                   JOIN test_cases tc ON tr.test_case_id = tc.id
+                   JOIN projects p ON tc.project_id = p.id
+                   WHERE p.user_id = %s
+                   ORDER BY tr.run_at DESC LIMIT 10""",
+                (user_id,)
+            )
+        except Exception:
+            cursor.execute(
+                """SELECT tr.id, tr.status, tr.health_score, tr.issues_found,
+                          tr.duration_ms, tr.run_at,
+                          tc.title AS test_case_title,
+                          p.name AS project_name
+                   FROM test_runs tr
+                   JOIN test_cases tc ON tr.test_case_id = tc.id
+                   JOIN projects p ON tc.project_id = p.id
+                   WHERE p.user_id = %s
+                   ORDER BY tr.run_at DESC LIMIT 10""",
+                (user_id,)
+            )
         runs = cursor.fetchall()
         cursor.close()
         data = []
@@ -369,6 +544,8 @@ def recent_runs():
                 'issues_found': run['issues_found'] or 0,
                 'duration_ms': run['duration_ms'] or 0,
                 'run_at': run['run_at'].isoformat() if run['run_at'] else '',
+                'run_type': run.get('run_type', 'AUTOMATED'),
+                'worst_severity': run.get('worst_severity'),
                 'test_case_title': run['test_case_title'],
                 'project_name': run['project_name'],
             })
@@ -441,6 +618,44 @@ def export_pdf():
             (user_id,)
         )
         recent = list(cursor.fetchall())
+
+        # Latest manual + automated runs for the split sections (B/C).
+        # Guarded for pre-migration databases without run_type.
+        latest_manual = latest_automated = None
+        try:
+            cursor.execute(
+                """SELECT tr.status, tr.health_score, tr.issues_found, tr.run_at,
+                          tr.verdict_reason, tc.title AS test_case_title,
+                          p.name AS project_name
+                   FROM test_runs tr
+                   JOIN test_cases tc ON tr.test_case_id = tc.id
+                   JOIN projects p ON tc.project_id = p.id
+                   WHERE p.user_id = %s AND tr.run_type = 'MANUAL'
+                   ORDER BY tr.run_at DESC LIMIT 3""",
+                (user_id,)
+            )
+            latest_manual = list(cursor.fetchall())
+            cursor.execute(
+                """SELECT tr.status, tr.health_score, tr.issues_found, tr.run_at,
+                          tr.verdict_reason, tc.title AS test_case_title,
+                          p.name AS project_name
+                   FROM test_runs tr
+                   JOIN test_cases tc ON tr.test_case_id = tc.id
+                   JOIN projects p ON tc.project_id = p.id
+                   WHERE p.user_id = %s AND tr.run_type != 'MANUAL'
+                   ORDER BY tr.run_at DESC LIMIT 3""",
+                (user_id,)
+            )
+            latest_automated = list(cursor.fetchall())
+        except Exception:
+            latest_manual, latest_automated = None, None
+        # Latest findings split by source for sections D/E/G-J.
+        try:
+            all_findings = _latest_detected_findings(user_id)
+        except Exception:
+            all_findings = []
+        manual_findings = [f for f in all_findings if f.get('source') == 'MANUAL']
+        auto_findings = [f for f in all_findings if f.get('source') != 'MANUAL']
         cursor.close()
 
         # Build PDF in memory
@@ -477,7 +692,7 @@ def export_pdf():
         ))
 
         # SUMMARY KPIs
-        story.append(Paragraph("Summary Statistics", section_style))
+        story.append(Paragraph("A. Test Summary", section_style))
         summary_table_data = [
             ['Metric', 'Value'],
             ['Total Projects', str(summary_data['total_projects'])],
@@ -581,6 +796,167 @@ def export_pdf():
                 ('ALIGN', (3,1), (4,-1), 'CENTER'),
             ]))
             story.append(t)
+
+        # ---- B. Manual testing results ----
+        story.append(Paragraph("B. Manual Testing Results", section_style))
+        if latest_manual:
+            rows = [['Test Case', 'Project', 'Status', 'Health', 'Issues', 'Date']]
+            for r in latest_manual:
+                rows.append([
+                    (r['test_case_title'] or '-')[:28],
+                    (r['project_name'] or '-')[:18],
+                    r['status'] or '-',
+                    f"{r['health_score'] or 0}/100",
+                    str(r['issues_found'] or 0),
+                    r['run_at'].strftime('%m/%d %H:%M') if r['run_at'] else '-',
+                ])
+            t = Table(rows, colWidths=[1.8*inch, 1.3*inch, 0.7*inch, 0.8*inch, 0.7*inch, 1.1*inch])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0d9488')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 8),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#d1d5db')),
+                ('PADDING', (0,0), (-1,-1), 6),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#f0fdfa')]),
+            ]))
+            story.append(t)
+            for r in latest_manual[:1]:
+                if r.get('verdict_reason'):
+                    story.append(Paragraph(
+                        f"Manual verdict basis: tester steps + expected-result decision + "
+                        f"reported issues. {r['verdict_reason']}", styles['Normal']))
+        else:
+            story.append(Paragraph("No manual runs recorded yet.", styles['Normal']))
+
+        # ---- C. Automated testing results ----
+        story.append(Paragraph("C. Automated Testing Results", section_style))
+        if latest_automated:
+            rows = [['Test Case', 'Project', 'Status', 'Health', 'Issues', 'Date']]
+            for r in latest_automated:
+                rows.append([
+                    (r['test_case_title'] or '-')[:28],
+                    (r['project_name'] or '-')[:18],
+                    r['status'] or '-',
+                    f"{r['health_score'] or 0}/100",
+                    str(r['issues_found'] or 0),
+                    r['run_at'].strftime('%m/%d %H:%M') if r['run_at'] else '-',
+                ])
+            t = Table(rows, colWidths=[1.8*inch, 1.3*inch, 0.7*inch, 0.8*inch, 0.7*inch, 1.1*inch])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e40af')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 8),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#d1d5db')),
+                ('PADDING', (0,0), (-1,-1), 6),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#eff6ff')]),
+            ]))
+            story.append(t)
+            for r in latest_automated[:1]:
+                if r.get('verdict_reason'):
+                    story.append(Paragraph(
+                        f"Automated verdict basis: detected issues + severity + "
+                        f"health score. {r['verdict_reason']}", styles['Normal']))
+        else:
+            story.append(Paragraph("No automated runs recorded yet.", styles['Normal']))
+
+        def _finding_rows(items, limit=20):
+            rows = [['Source', 'Category', 'Issue', 'Severity']]
+            for f in items[:limit]:
+                rows.append([
+                    f.get('source', '-'),
+                    (f.get('category') or '-')[:18],
+                    (f.get('issue') or '-')[:60],
+                    f.get('severity', '-'),
+                ])
+            return rows
+
+        # ---- D. Manual findings ----
+        story.append(Paragraph(f"D. Manual Findings ({len(manual_findings)})", section_style))
+        if manual_findings:
+            t = Table(_finding_rows(manual_findings),
+                      colWidths=[0.9*inch, 1.2*inch, 3.0*inch, 0.9*inch])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#0d9488')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 8),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#d1d5db')),
+                ('PADDING', (0,0), (-1,-1), 6),
+            ]))
+            story.append(t)
+        else:
+            story.append(Paragraph("No manual findings in the latest runs.", styles['Normal']))
+
+        # ---- E. Automated findings ----
+        story.append(Paragraph(f"E. Automated Findings ({len(auto_findings)})", section_style))
+        if auto_findings:
+            t = Table(_finding_rows(auto_findings),
+                      colWidths=[0.9*inch, 1.2*inch, 3.0*inch, 0.9*inch])
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1e40af')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 8),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#d1d5db')),
+                ('PADDING', (0,0), (-1,-1), 6),
+            ]))
+            story.append(t)
+        else:
+            story.append(Paragraph("No automated findings in the latest runs.", styles['Normal']))
+
+        # ---- F. Screenshots / evidence ----
+        story.append(Paragraph("F. Screenshots / Evidence", section_style))
+        story.append(Paragraph(
+            "Per-step screenshots are pinned to each manual step and per-page "
+            "screenshots to each automated crawl page. Open the run in the app "
+            "to view them; file paths are stored on the run record.",
+            styles['Normal']))
+
+        # ---- G-J. Category sections drawn from automated findings ----
+        for code, title in (("accessibility", "G. Accessibility Results"),
+                            ("seo", "H. SEO Results"),
+                            ("security", "I. Security Results"),
+                            ("performance", "J. Performance Results")):
+            story.append(Paragraph(title, section_style))
+            cat_items = [f for f in auto_findings
+                         if (f.get('category') or '').startswith(code)]
+            if cat_items:
+                t = Table(_finding_rows(cat_items, limit=10),
+                          colWidths=[0.9*inch, 1.2*inch, 3.0*inch, 0.9*inch])
+                t.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#334155')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,-1), 8),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#d1d5db')),
+                    ('PADDING', (0,0), (-1,-1), 6),
+                ]))
+                story.append(t)
+            else:
+                story.append(Paragraph(f"No {code} findings in the latest runs.",
+                                       styles['Normal']))
+
+        # ---- K. Regression ----
+        story.append(Paragraph("K. Regression Results", section_style))
+        if recent and len(recent) >= 2:
+            story.append(Paragraph(
+                f"Latest run health {recent[0]['health_score'] or 0}/100 vs previous "
+                f"{recent[1]['health_score'] or 0}/100. Open the test case history "
+                f"for the new/fixed issue diff.", styles['Normal']))
+        else:
+            story.append(Paragraph("Not enough runs yet for a regression comparison.",
+                                   styles['Normal']))
+
+        # ---- L. Final verdict ----
+        story.append(Paragraph("L. Final Verdict", section_style))
+        story.append(Paragraph(
+            "Manual runs are judged by the tester's steps, expected-result "
+            "decision and reported issues; automated evidence never overrides "
+            "that verdict. Automated runs pass only when no issues are found; "
+            "the verdict reason on each run states the critical count and "
+            "health score behind it.", styles['Normal']))
 
         # FOOTER
         story.append(Spacer(1, 0.3*inch))

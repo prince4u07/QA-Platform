@@ -57,10 +57,12 @@ class JobManager:
                 'status': 'queued',          # queued -> running -> done | failed | cancelled
                 'run_id': None,
                 'error': None,
+                'error_code': None,
                 'result': None,
-                'progress': None,            # {tested, total, current, ...}
+                'progress': None,            # {phase, tested, total, pages_*, current_page, ...}
                 'cancel_requested': False,
                 'created_at': datetime.utcnow().isoformat(),
+                'started_at': None,
                 'finished_at': None,
             }
             self._order.append(job_id)
@@ -83,10 +85,11 @@ class JobManager:
         # Imported lazily to avoid a circular import at module load time.
         from modules.runner.routes import _perform_run
 
-        self._set(job_id, status='running')
+        self._set(job_id, status='running', started_at=datetime.utcnow().isoformat())
 
         def _progress(p):
-            # p = {tested, total, current, issues_so_far, queued}
+            # p = {phase, tested, total, pages_discovered, pages_tested,
+            #      current_page, current_category, issues_so_far, queued, duration_ms}
             self._set(job_id, progress=p)
 
         def _cancelled():
@@ -111,11 +114,13 @@ class JobManager:
             else:
                 self._set(job_id, status='failed',
                           error=(result or {}).get('error', 'Run failed'),
+                          error_code=(result or {}).get('code', 'run_failed'),
                           result=result,
                           finished_at=datetime.utcnow().isoformat())
         except Exception as e:
             logger.exception("run job %s crashed: %s", job_id, e)
             self._set(job_id, status='failed', error=str(e)[:500],
+                      error_code='worker_crash',
                       finished_at=datetime.utcnow().isoformat())
 
     def _set(self, job_id, **kw):

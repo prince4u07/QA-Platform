@@ -15,9 +15,11 @@ from playwright.sync_api import sync_playwright
 from PIL import Image
 from urllib.parse import urlparse, urljoin
 from datetime import datetime
+import ipaddress
 import os
 import json
 import re
+import socket
 import time
 import uuid
 import logging
@@ -28,6 +30,13 @@ import requests
 from modules.runner.jobs import job_manager
 from modules.runner import manual_run
 from modules.runner.steps import run_steps, summarise_steps
+from modules.runner.extended_checks import (
+    check_url_health,
+    check_api_quality,
+    check_page_resources,
+    check_ui_consistency,
+    check_code_quality,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -470,6 +479,9 @@ CATEGORY_LABELS = {
     'api_issues': 'Failed data request',
     'validation_issues': 'Form validation',
     'execution_errors': 'Audit could not finish',
+    'url_issues': 'URL problem',
+    'ui_issues': 'Interface defect',
+    'code_issues': 'Front-end code problem',
 }
 
 # Where to fix each category (shown as "Where to change").
@@ -486,6 +498,9 @@ CATEGORY_FIX_GUIDANCE = {
     'api_issues': 'Fix the frontend request URL or the backend endpoint that serves it.',
     'validation_issues': 'Add required-field validation to the form control or its submit handler.',
     'execution_errors': 'Re-run the audit; if it persists, check the page loads without login expiry.',
+    'url_issues': 'Fix the URL, redirect, or server route so the address serves the intended page.',
+    'ui_issues': 'Update the page template so IDs are unique and every control has a label.',
+    'code_issues': 'Move inline code into versioned assets, drop deprecated tags, and update libraries.',
 }
 
 
@@ -1245,6 +1260,9 @@ DEFAULT_SEVERITY = {
     'api_issues': 'serious',
     'validation_issues': 'serious',
     'execution_errors': 'serious',
+    'url_issues': 'serious',
+    'ui_issues': 'moderate',
+    'code_issues': 'moderate',
 }
 
 # How much each category contributes to the overall score. Sums to 100.
@@ -1263,6 +1281,9 @@ CATEGORY_WEIGHT = {
     'api_issues': 10,
     'validation_issues': 10,
     'execution_errors': 8,
+    'url_issues': 8,
+    'ui_issues': 7,
+    'code_issues': 7,
 }
 
 # Controls how fast a category's subscore falls as penalties pile up.
@@ -1828,7 +1849,7 @@ def build_crawl_queue(base_url, landing_url=None, session_used=False):
 
 def test_single_page(page, page_url, response_headers, console_messages,
                      page_load_ms=0, api_responses=None, is_mobile=False,
-                     mobile_checked=None):
+                     mobile_checked=None, page_status=0):
     """
     Run every check against one loaded page.
 
@@ -1860,7 +1881,35 @@ def test_single_page(page, page_url, response_headers, console_messages,
 
     performance_issues, perf_metrics = check_performance(page, page_load_ms)
     api_issues = check_api_responses(api_responses)
+    try:
+        api_issues = (api_issues or []) + check_api_quality(api_responses, page_url)
+    except Exception as e:
+        logger.warning("extended api check error: %s", e)
     validation_issues = check_form_validation(page)
+    try:
+        url_issues = check_url_health(page_url, page_status, response_headers)
+    except Exception as e:
+        logger.warning("url health check error: %s", e)
+        url_issues = []
+    try:
+        resource_findings, resource_coverage = check_page_resources(page, page_url)
+    except Exception as e:
+        logger.warning("resource check error: %s", e)
+        resource_findings, resource_coverage = [], {}
+    # Deep resource problems are still broken links, so they share the
+    # category and its weight rather than inventing a new score bucket.
+    broken_links = (broken_links or []) + (resource_findings or [])
+    link_coverage = {**(link_coverage or {}), 'resources': resource_coverage}
+    try:
+        ui_issues = check_ui_consistency(page)
+    except Exception as e:
+        logger.warning("ui consistency check error: %s", e)
+        ui_issues = []
+    try:
+        code_issues = check_code_quality(page)
+    except Exception as e:
+        logger.warning("code quality check error: %s", e)
+        code_issues = []
 
     real_errors = filter_console_errors(console_messages)
     console_errors_rich = [
@@ -1883,6 +1932,9 @@ def test_single_page(page, page_url, response_headers, console_messages,
         'performance_issues': performance_issues,
         'api_issues': api_issues,
         'validation_issues': validation_issues,
+        'url_issues': url_issues,
+        'ui_issues': ui_issues,
+        'code_issues': code_issues,
     }
     coverage = {
         'links': link_coverage,
@@ -1899,7 +1951,79 @@ def tag_findings_with_page(findings_dict, page_url):
         for item in items:
             if isinstance(item, dict):
                 item['page_url'] = page_url
+                # Every automated finding is labelled at the source so the
+                # UI, reports and PDFs can filter MANUAL vs AUTOMATED.
+                item.setdefault('source', 'AUTOMATED')
     return findings_dict
+
+
+def _is_allowed_test_url(url):
+    """SSRF/unsafe-navigation guard: only http(s) URLs without credentials.
+
+    DNS-level check: a hostname that resolves to a private, loopback,
+    link-local, multicast or otherwise reserved IP is rejected, because a
+    crawler that fetches it can reach cloud metadata endpoints
+    (169.254.169.254) or the internal network. Hosts listed in
+    QA_SSRF_ALLOWLIST (default: localhost, 127.0.0.1, ::1 for local dev)
+    are exempt, and QA_ALLOW_PRIVATE_HOSTS=1 disables the DNS check
+    entirely (never set that in production).
+
+    A DNS failure fails OPEN (the name cannot be proven private) so offline
+    dev and unit tests with fake hosts keep working; a successful resolution
+    to a non-public IP fails CLOSED.
+    """
+    try:
+        parsed = urlparse(url or '')
+        if parsed.scheme not in ('http', 'https'):
+            return False, 'URL must start with http:// or https://'
+        if not parsed.netloc:
+            return False, 'URL has no host'
+        if parsed.username or parsed.password:
+            return False, 'URLs with embedded credentials are not allowed'
+        host = (parsed.hostname or '').lower()
+        if _is_ssrf_exempt_host(host):
+            return True, ''
+        try:
+            resolved = socket.getaddrinfo(host, parsed.port or 80, type=socket.SOCK_STREAM)
+        except Exception:
+            return True, ''      # cannot prove private: allow, scheme checks held
+        for family, _type, _proto, _canon, sockaddr in resolved:
+            ip = sockaddr[0]
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if (addr.is_private or addr.is_loopback or addr.is_link_local
+                    or addr.is_multicast or addr.is_reserved or addr.is_unspecified):
+                return False, (f'Host {host} resolves to non-public IP {ip}; '
+                               'internal targets are not allowed')
+        return True, ''
+    except Exception:
+        return False, 'URL could not be parsed'
+
+
+def _is_ssrf_exempt_host(host):
+    """Local-dev allowlist for the SSRF DNS guard."""
+    extra = os.getenv('QA_SSRF_ALLOWLIST', '')
+    allowed = {'localhost', '127.0.0.1', '::1'}
+    for item in extra.split(','):
+        item = item.strip().lower()
+        if item:
+            allowed.add(item)
+    if os.getenv('QA_ALLOW_PRIVATE_HOSTS') == '1':
+        return True
+    return host in allowed
+
+
+def _verdict_reason(status, issues_by_severity, health_score):
+    """Human-readable reason behind an automated Pass/Fail."""
+    crit = issues_by_severity.get('critical', 0)
+    if status == 'Pass':
+        return f'No issues found (health {health_score}/100).'
+    if crit:
+        return f'{crit} critical issue(s) found (health {health_score}/100).'
+    total = sum(issues_by_severity.values())
+    return f'{total} issue(s) found (health {health_score}/100).'
 
 
 # A stable identity per finding, used both to de-duplicate the same defect
@@ -1924,6 +2048,9 @@ FINDING_KEYERS = {
     'performance_issues': lambda i: i.get('issue'),
     'api_issues': lambda i: i.get('url') or i.get('issue'),
     'validation_issues': lambda i: i.get('form_index') or i.get('issue'),
+    'url_issues': lambda i: i.get('issue'),
+    'ui_issues': lambda i: i.get('element_selector') or i.get('issue'),
+    'code_issues': lambda i: i.get('issue'),
 }
 
 
@@ -2063,6 +2190,9 @@ def run_test(testcase_id):
         return jsonify({'error': 'Test case not found'}), 404
     if tc['test_type'] != 'automated':
         return jsonify({'error': 'Only automated test cases can be run'}), 400
+    ok, reason = _is_allowed_test_url(tc.get('base_url'))
+    if not ok:
+        return jsonify({'error': reason, 'code': 'invalid_url'}), 400
 
     result, code = _perform_run(testcase_id, dict(tc))
     return jsonify(result), code
@@ -2078,9 +2208,29 @@ def run_test_async(testcase_id):
         return jsonify({'error': 'Test case not found'}), 404
     if tc['test_type'] != 'automated':
         return jsonify({'error': 'Only automated test cases can be run'}), 400
+    ok, reason = _is_allowed_test_url(tc.get('base_url'))
+    if not ok:
+        return jsonify({'error': reason, 'code': 'invalid_url'}), 400
 
     job_id = job_manager.submit(user_id, testcase_id, dict(tc))
     return jsonify({'job_id': job_id, 'status': 'queued'}), 202
+
+
+@runner_bp.route('/run/<int:testcase_id>/retry', methods=['POST'])
+@jwt_required()
+def run_test_retry(testcase_id):
+    """Retry a failed run: re-queues the same test case as a fresh job."""
+    user_id = int(get_jwt_identity())
+    tc = user_owns_testcase(user_id, testcase_id)
+    if not tc:
+        return jsonify({'error': 'Test case not found'}), 404
+    if tc['test_type'] != 'automated':
+        return jsonify({'error': 'Only automated test cases can be run'}), 400
+    ok, reason = _is_allowed_test_url(tc.get('base_url'))
+    if not ok:
+        return jsonify({'error': reason, 'code': 'invalid_url'}), 400
+    job_id = job_manager.submit(user_id, testcase_id, dict(tc))
+    return jsonify({'job_id': job_id, 'status': 'queued', 'retried': True}), 202
 
 
 @runner_bp.route('/job/<job_id>', methods=['GET'])
@@ -2119,6 +2269,9 @@ def manual_start(testcase_id):
     tc = user_owns_testcase(user_id, testcase_id)
     if not tc:
         return jsonify({'error': 'Test case not found'}), 404
+    ok, reason = _is_allowed_test_url(tc.get('base_url'))
+    if not ok:
+        return jsonify({'error': reason, 'code': 'invalid_url'}), 400
     ok, message, snap = manual_run.start(
         testcase_id, tc.get('project_id'), tc.get('base_url'),
         max_pages=tc.get('max_pages') or 25,
@@ -2145,7 +2298,8 @@ def manual_mark_step(testcase_id, index):
     session = manual_run.get(testcase_id)
     if not session:
         return jsonify({'error': 'No manual run is open for this test case'}), 404
-    if not session.mark_step(index, status, data.get('note', '')):
+    if not session.mark_step(index, status, data.get('note', ''),
+                             data.get('issue_ref')):
         return jsonify({'error': 'Unknown step or status'}), 400
     return jsonify({'run': session.snapshot()}), 200
 
@@ -2179,10 +2333,28 @@ def manual_report_issue(testcase_id):
         title=title,
         note=data.get('note', ''),
         step_index=data.get('step_index'),
+        description=data.get('description', ''),
+        expected_result=data.get('expected_result', ''),
+        actual_result=data.get('actual_result', ''),
+        browser_device=(request.headers.get('User-Agent') or '')[:255],
     )
     if entry is None:
         return jsonify({'error': 'Could not record the issue'}), 400
     return jsonify({'issue': entry, 'run': session.snapshot()}), 201
+
+
+@runner_bp.route('/manual/<int:testcase_id>/pause', methods=['POST'])
+@jwt_required()
+def manual_pause(testcase_id):
+    """Pause or resume a live manual session without closing the browser."""
+    user_id = int(get_jwt_identity())
+    if not user_owns_testcase(user_id, testcase_id):
+        return jsonify({'error': 'Test case not found'}), 404
+    data = request.json or {}
+    ok, message, snap = manual_run.pause(testcase_id, bool(data.get('paused', True)))
+    if not ok:
+        return jsonify({'error': message}), 404
+    return jsonify({'message': message, 'run': snap}), 200
 
 
 @runner_bp.route('/manual/<int:testcase_id>/autocrawl', methods=['POST'])
@@ -2272,15 +2444,23 @@ def manual_done(testcase_id):
         })
 
     # Everything the tester spotted by eye, in the same shape as any finding.
+    # source is always MANUAL here so dashboards/reports can filter it.
     reported = [
         {
             'issue': r['title'],
             'severity': r['severity'],
             'category': r['category'],
+            'description': r.get('description', r.get('note', '')),
             'note': r.get('note', ''),
+            'expected_result': r.get('expected_result', ''),
+            'actual_result': r.get('actual_result', ''),
             'page_url': r.get('page_url', ''),
+            'url': r.get('url', r.get('page_url', '')),
             'screenshot': r.get('screenshot', ''),
-            'source': 'tester',
+            'browser_device': r.get('browser_device', ''),
+            'step_index': r.get('step_index'),
+            'timestamp': r.get('timestamp', r.get('reported_at', '')),
+            'source': 'MANUAL',
             'display': f'[{r["category"]}] {r["title"]}',
         }
         for r in (snap.get('reported') or [])
@@ -2290,13 +2470,31 @@ def manual_done(testcase_id):
     for finding in (snap.get('auto_findings') or []):
         if not isinstance(finding, dict):
             continue
+        finding.setdefault('source', 'AUTOMATED')
         category = finding.get('category', 'other')
         automatic.setdefault(category, []).append(finding)
 
     issues_found = len(functional) + len(reported) + len(snap.get('auto_findings') or [])
+    # Manual verdict depends ONLY on the tester's steps, expected-result
+    # decision and reported issues. Automated evidence is stored alongside
+    # but never overrides it (see manual_run.summarise_manual).
+    if snap.get('expected_met') is False:
+        verdict_reason = 'Tester marked the expected result as not met.'
+    elif any(s['status'] == 'failed' for s in (snap.get('steps') or [])):
+        n = sum(1 for s in (snap.get('steps') or []) if s['status'] == 'failed')
+        verdict_reason = f'{n} manual step(s) failed.'
+    elif reported:
+        verdict_reason = f'{len(reported)} issue(s) reported by the tester.'
+    elif outcome == 'Pass':
+        verdict_reason = 'All checked steps passed and no issues were reported.'
+    else:
+        verdict_reason = 'Tester marked the run as failed.'
 
     findings_evidence = json.dumps({
         'manual': True,
+        'run_type': 'MANUAL',
+        'execution_mode': 'HEADED',
+        'source': 'HYBRID' if automatic else 'HUMAN',
         'note': note,
         'pages': pages,
         'steps': snap.get('steps') or [],
@@ -2306,12 +2504,19 @@ def manual_done(testcase_id):
         'expected_result': snap.get('expected_result', ''),
         'expected_met': snap.get('expected_met'),
         'summary': manual_summary,
+        'verdict_reason': verdict_reason,
     })
 
     manual_findings = {'functional_issues': functional}
     for category, items in automatic.items():
         manual_findings.setdefault(category, []).extend(items)
     manual_score = calculate_health_score(manual_findings)
+    run_source = 'HYBRID' if automatic else 'HUMAN'
+    manual_worst = worst_severity({
+        'functional_issues': functional,
+        'reported_issues': reported,
+        **automatic,
+    })
 
     try:
         cursor = mysql.connection.cursor()
@@ -2320,25 +2525,87 @@ def manual_done(testcase_id):
             cursor.close()
             return jsonify({'error': 'Test case was deleted before the run finished.'}), 410
 
-        cursor.execute(
-            """INSERT INTO test_runs (
-                test_case_id, status, screenshot, run_at, duration_ms,
-                issues_found, total_requests, findings_evidence,
-                functional_issues, steps_result, health_score
-            ) VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s)""",
-            (
-                testcase_id, outcome,
-                first_shot,
-                duration_ms,
-                issues_found, len(pages),
-                findings_evidence,
-                json.dumps([f['display'] for f in functional]),
-                json.dumps({'results': snap.get('steps') or [],
-                            'summary': manual_summary}),
-                manual_score,
+        try:
+            cursor.execute(
+                """INSERT INTO test_runs (
+                    test_case_id, status, screenshot, run_at, duration_ms,
+                    issues_found, total_requests, findings_evidence,
+                    functional_issues, steps_result, health_score,
+                    run_type, execution_mode, source, verdict_reason, worst_severity
+                ) VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    testcase_id, outcome,
+                    first_shot,
+                    duration_ms,
+                    issues_found, len(pages),
+                    findings_evidence,
+                    json.dumps([f['display'] for f in functional]),
+                    json.dumps({'results': snap.get('steps') or [],
+                                'summary': manual_summary}),
+                    manual_score,
+                    'MANUAL', 'HEADED', run_source, verdict_reason[:500],
+                    manual_worst,
+                )
             )
-        )
+        except Exception:
+            # Older database without the new columns: fall back to the
+            # original insert so manual runs keep working pre-migration.
+            cursor.execute(
+                """INSERT INTO test_runs (
+                    test_case_id, status, screenshot, run_at, duration_ms,
+                    issues_found, total_requests, findings_evidence,
+                    functional_issues, steps_result, health_score
+                ) VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    testcase_id, outcome,
+                    first_shot,
+                    duration_ms,
+                    issues_found, len(pages),
+                    findings_evidence,
+                    json.dumps([f['display'] for f in functional]),
+                    json.dumps({'results': snap.get('steps') or [],
+                                'summary': manual_summary}),
+                    manual_score,
+                )
+            )
         run_id = cursor.lastrowid
+        # Per-step evidence rows (best-effort: table may not exist pre-migration).
+        try:
+            for s in (snap.get('steps') or []):
+                cursor.execute(
+                    """INSERT INTO manual_step_evidence (
+                        test_run_id, test_case_id, step_index, step_text,
+                        result, note, screenshot, issue_ref
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (run_id, testcase_id, s.get('index', 0),
+                     (s.get('text') or '')[:1000], s.get('status', 'pending'),
+                     (s.get('note') or '')[:2000],
+                     (s.get('screenshot') or '')[:500],
+                     str(s.get('issue_ref') or '')[:100] or None),
+                )
+        except Exception as e:
+            logger.warning("manual step evidence insert skipped: %s", e)
+        # Manual issue rows (best-effort pre-migration).
+        try:
+            for r in reported:
+                cursor.execute(
+                    """INSERT INTO manual_issues (
+                        test_run_id, test_case_id, title, description, category,
+                        severity, expected_result, actual_result, url, screenshot,
+                        browser_device, step_index, source
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (run_id, testcase_id, r['issue'][:255],
+                     r.get('description', '')[:2000], r.get('category', 'other'),
+                     r.get('severity', 'moderate'),
+                     r.get('expected_result', '')[:2000],
+                     r.get('actual_result', '')[:2000],
+                     (r.get('url') or '')[:2000],
+                     (r.get('screenshot') or '')[:500],
+                     (r.get('browser_device') or '')[:255],
+                     r.get('step_index'), 'MANUAL'),
+                )
+        except Exception as e:
+            logger.warning("manual issues insert skipped: %s", e)
         cursor.execute("UPDATE test_cases SET status = %s WHERE id = %s",
                        (outcome, testcase_id))
         mysql.connection.commit()
@@ -2350,6 +2617,11 @@ def manual_done(testcase_id):
     return jsonify({
         'message': message,
         'run_id': run_id,
+        'run_type': 'MANUAL',
+        'execution_mode': 'HEADED',
+        'source': run_source,
+        'verdict_reason': verdict_reason,
+        'worst_severity': manual_worst,
         'status': outcome,
         'pages_visited': len(pages),
         'duration_ms': duration_ms,
@@ -2472,10 +2744,22 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
         else (session_warning or 'Crawled anonymously (no captured session).')
 
     start_time = time.time()
+    _report(phase='starting', status='starting', tested=0, total=max_pages,
+            pages_discovered=0, pages_tested=0, current_page=base_url,
+            current_category='launch', duration_ms=0)
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            try:
+                browser = p.chromium.launch(headless=True)
+            except Exception as e:
+                logger.exception("browser launch failed: %s", e)
+                return {
+                    'error': f'Browser failed to launch: {str(e)[:300]}',
+                    'code': 'browser_launch_failure',
+                    'status': 'Fail',
+                    'pages_crawled': 0,
+                }, 500
             # When we have a captured session, use a DESKTOP context that matches the
             # session_capture window. Many sites bind auth cookies to the originating
             # UA — using a mobile UA invalidates the session. Without a session we keep
@@ -2611,6 +2895,7 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             all_pages_coverage = []
             per_page_records = []
             urls_to_test = []   # URLs actually visited, in order
+            api_seen = set()    # every XHR/fetch URL observed during the crawl
 
             # Written steps for this test case, executed once on the first page.
             steps_text = (tc.get('steps') or '').strip()
@@ -2637,10 +2922,49 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 }) if msg.type in ('error', 'warning') else None
             )
             api_responses = []
-            crawl_page.on('response', lambda response: api_responses.append({
-                'url': response.url,
-                'status': response.status,
-            }) if response.request.resource_type in ('xhr', 'fetch') else None)
+            _api_start = {}
+
+            def _on_request(request):
+                try:
+                    if request.resource_type in ('xhr', 'fetch'):
+                        _api_start[request.url] = time.time()
+                except Exception:
+                    pass
+
+            def _on_response(response):
+                try:
+                    if response.request.resource_type not in ('xhr', 'fetch'):
+                        return
+                    started = _api_start.pop(response.url, None)
+                    elapsed = int((time.time() - started) * 1000) if started else None
+                    try:
+                        headers = response.headers or {}
+                    except Exception:
+                        headers = {}
+                    ctype = ''
+                    try:
+                        for k, v in headers.items():
+                            if str(k).lower() == 'content-type':
+                                ctype = v
+                                break
+                    except Exception:
+                        pass
+                    try:
+                        method = response.request.method
+                    except Exception:
+                        method = ''
+                    api_responses.append({
+                        'url': response.url,
+                        'status': response.status,
+                        'method': method,
+                        'elapsed_ms': elapsed,
+                        'content_type': ctype,
+                    })
+                except Exception:
+                    pass
+
+            crawl_page.on('request', _on_request)
+            crawl_page.on('response', _on_response)
 
             page_idx = -1
             was_cancelled = False
@@ -2728,8 +3052,7 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                     except Exception:
                         page_title = ''
 
-                    page_findings, page_coverage = test_single_page(
-                        page, page_url, response_headers,
+                    page_findings, page_coverage = test_single_page(                        page, page_url, response_headers,
                         console_messages,
                         page_load_ms=page_load_ms,
                         api_responses=api_responses,
@@ -2737,7 +3060,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         # mobile checks measure something real there.
                         # Authenticated crawls run desktop (session validity
                         # depends on the desktop UA), where they would be noise.
-                        mobile_checked=not session_used)
+                        mobile_checked=not session_used,
+                        page_status=page_status)
                     if page_idx == 0:
                         page_findings['functional_issues'] = step_findings
                         page_coverage['steps'] = step_summary
@@ -2797,6 +3121,12 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                             logger.warning("crawl link-discovery error: %s", e)
 
                     page_issues_found = sum(len(items) for items in page_findings.values())
+                    try:
+                        for r in api_responses or []:
+                            if r.get('url'):
+                                api_seen.add(r['url'])
+                    except Exception:
+                        pass
                     # Steps only ever run on the first page, so every later
                     # page would otherwise collect the functional weight in
                     # full for a check that never happened there.
@@ -2825,9 +3155,15 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                     logger.info("crawl page %s/%s: %s - %s issues, health %s (queued: %s more)",
                                 len(per_page_records), max_pages, page_url, page_issues_found,
                                 page_health_score, len(to_visit))
-                    _report(tested=len(per_page_records), total=max_pages,
-                            current=page_url, issues_so_far=page_issues_found,
-                            queued=len(to_visit))
+                    _report(phase='crawling', status='running',
+                            tested=len(per_page_records), total=max_pages,
+                            pages_discovered=len(queued) + len(per_page_records),
+                            pages_tested=len(per_page_records),
+                            current=page_url, current_page=page_url,
+                            current_category='page-audit',
+                            issues_so_far=page_issues_found,
+                            queued=len(to_visit),
+                            duration_ms=int((time.time() - start_time) * 1000))
                     # NOTE: do NOT page.close() here. The crawl page is reused
                     # across every URL so React stays mounted and the SPA's auth
                     # context survives. It is closed after the BFS loop.
@@ -2897,6 +3233,24 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             # the caveat about anything that was capped or skipped.
             duration_ms = int((time.time() - start_time) * 1000)
 
+            # Severity totals for the verdict and the results panel.
+            by_severity = {sev: 0 for sev in SEVERITY_ORDER}
+            for category, items in merged_findings.items():
+                for f in items or []:
+                    by_severity[finding_severity(category, f)] = \
+                        by_severity.get(finding_severity(category, f), 0) + 1
+            verdict_reason = ('Cancelled by the tester before the crawl finished.'
+                              if was_cancelled else
+                              _verdict_reason(status, by_severity, health_score))
+            links_found = sum((c.get('links') or {}).get('links_found', 0)
+                              for c in all_pages_coverage)
+            links_checked = sum((c.get('links') or {}).get('links_checked', 0)
+                                for c in all_pages_coverage)
+            api_tested = len(api_seen)
+            _report(phase='done', status='done', tested=len(per_page_records),
+                    total=max_pages, pages_discovered=len(queued) + len(per_page_records),
+                    pages_tested=len(per_page_records), duration_ms=duration_ms)
+
             first_page = per_page_records[0] if per_page_records else {}
             page_load_ms = first_page.get('page_load_time_ms', 0)
 
@@ -2917,42 +3271,83 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                     'pages_crawled': len(per_page_records),
                 }, 410
 
-            cursor.execute(
-                """INSERT INTO test_runs (
-                    test_case_id, status, screenshot, run_at, duration_ms,
-                    console_errors, broken_links, missing_alt_images, page_load_time_ms,
-                    issues_found, total_page_size_kb, total_requests,
-                    seo_issues, security_issues, accessibility_issues, mobile_issues,
-                    performance_issues, functional_issues, steps_result,
-                    findings_evidence, score_breakdown,
-                    coverage, regression, health_score
-                ) VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                          %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    testcase_id, status,
-                    first_page.get('screenshot', ''),
-                    duration_ms,
-                    json.dumps(display_findings['console_errors']),
-                    json.dumps(display_findings['broken_links']),
-                    json.dumps(display_findings['missing_alt_images']),
-                    page_load_ms,
-                    issues_found,
-                    coverage_summary['page_size_kb_total'],
-                    len(urls_to_test),
-                    json.dumps(display_findings['seo_issues']),
-                    json.dumps(display_findings['security_issues']),
-                    json.dumps(display_findings['accessibility_issues']),
-                    json.dumps(display_findings['mobile_issues']),
-                    json.dumps(display_findings['performance_issues']),
-                    json.dumps(display_findings['functional_issues']),
-                    json.dumps({'results': step_results, 'summary': step_summary}),
-                    json.dumps(merged_findings),
-                    json.dumps(breakdown),
-                    json.dumps(coverage_summary),
-                    json.dumps(regression),
-                    health_score,
+            try:
+                cursor.execute(
+                    """INSERT INTO test_runs (
+                        test_case_id, status, screenshot, run_at, duration_ms,
+                        console_errors, broken_links, missing_alt_images, page_load_time_ms,
+                        issues_found, total_page_size_kb, total_requests,
+                        seo_issues, security_issues, accessibility_issues, mobile_issues,
+                        performance_issues, functional_issues, steps_result,
+                        findings_evidence, score_breakdown,
+                        coverage, regression, health_score,
+                        run_type, execution_mode, source, verdict_reason, worst_severity
+                    ) VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        testcase_id, status,
+                        first_page.get('screenshot', ''),
+                        duration_ms,
+                        json.dumps(display_findings.get('console_errors', [])),
+                        json.dumps(display_findings.get('broken_links', [])),
+                        json.dumps(display_findings.get('missing_alt_images', [])),
+                        page_load_ms,
+                        issues_found,
+                        coverage_summary['page_size_kb_total'],
+                        len(urls_to_test),
+                        json.dumps(display_findings.get('seo_issues', [])),
+                        json.dumps(display_findings.get('security_issues', [])),
+                        json.dumps(display_findings.get('accessibility_issues', [])),
+                        json.dumps(display_findings.get('mobile_issues', [])),
+                        json.dumps(display_findings.get('performance_issues', [])),
+                        json.dumps(display_findings.get('functional_issues', [])),
+                        json.dumps({'results': step_results, 'summary': step_summary}),
+                        json.dumps(merged_findings),
+                        json.dumps(breakdown),
+                        json.dumps(coverage_summary),
+                        json.dumps(regression),
+                        health_score,
+                        'AUTOMATED', 'HEADLESS', 'MACHINE', verdict_reason[:500],
+                        top_severity,
+                    )
                 )
-            )
+            except Exception:
+                cursor.execute(
+                    """INSERT INTO test_runs (
+                        test_case_id, status, screenshot, run_at, duration_ms,
+                        console_errors, broken_links, missing_alt_images, page_load_time_ms,
+                        issues_found, total_page_size_kb, total_requests,
+                        seo_issues, security_issues, accessibility_issues, mobile_issues,
+                        performance_issues, functional_issues, steps_result,
+                        findings_evidence, score_breakdown,
+                        coverage, regression, health_score
+                    ) VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                              %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        testcase_id, status,
+                        first_page.get('screenshot', ''),
+                        duration_ms,
+                        json.dumps(display_findings.get('console_errors', [])),
+                        json.dumps(display_findings.get('broken_links', [])),
+                        json.dumps(display_findings.get('missing_alt_images', [])),
+                        page_load_ms,
+                        issues_found,
+                        coverage_summary['page_size_kb_total'],
+                        len(urls_to_test),
+                        json.dumps(display_findings.get('seo_issues', [])),
+                        json.dumps(display_findings.get('security_issues', [])),
+                        json.dumps(display_findings.get('accessibility_issues', [])),
+                        json.dumps(display_findings.get('mobile_issues', [])),
+                        json.dumps(display_findings.get('performance_issues', [])),
+                        json.dumps(display_findings.get('functional_issues', [])),
+                        json.dumps({'results': step_results, 'summary': step_summary}),
+                        json.dumps(merged_findings),
+                        json.dumps(breakdown),
+                        json.dumps(coverage_summary),
+                        json.dumps(regression),
+                        health_score,
+                    )
+                )
             mysql.connection.commit()
             run_id = cursor.lastrowid
 
@@ -2984,9 +3379,18 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
 
             return {
                 'run_id': run_id,
+                'run_type': 'AUTOMATED',
+                'execution_mode': 'HEADLESS',
+                'source': 'MACHINE',
+                'verdict_reason': verdict_reason,
+                'worst_severity': top_severity,
                 'status': status,
                 'health_score': health_score,
                 'issues_found': issues_found,
+                'issues_by_severity': by_severity,
+                'critical_issues': by_severity.get('critical', 0),
+                'major_issues': by_severity.get('serious', 0),
+                'minor_issues': by_severity.get('moderate', 0) + by_severity.get('minor', 0),
                 'duration_ms': duration_ms,
                 'page_load_time_ms': page_load_ms,
                 'total_page_size_kb': coverage_summary['page_size_kb_total'],
@@ -2994,6 +3398,18 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                 'screenshot': first_page.get('screenshot', ''),
                 'pages_tested': len(urls_to_test),
                 'pages_crawled': len(per_page_records),
+                'pages_discovered': len(queued) + len(per_page_records),
+                'links_found': links_found,
+                'links_checked': links_checked,
+                'links_tested': links_checked,
+                'api_endpoints_tested': api_tested,
+                'console_error_count': len(merged_findings.get('console_errors', [])),
+                'accessibility_violations': len(merged_findings.get('accessibility_issues', [])),
+                'seo_issue_count': len(merged_findings.get('seo_issues', [])),
+                'security_issue_count': len(merged_findings.get('security_issues', [])),
+                'performance_issue_count': len(merged_findings.get('performance_issues', [])),
+                'ui_issue_count': len(merged_findings.get('ui_issues', [])),
+                'code_issue_count': len(merged_findings.get('code_issues', [])),
                 'is_multi_page': crawl_pages,
                 'session_used': session_used,
                 'session_message': session_message,
@@ -3029,12 +3445,23 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
 
         try:
             cursor = mysql.connection.cursor()
-            cursor.execute(
-                """INSERT INTO test_runs (
-                    test_case_id, status, run_at, duration_ms, error_message, health_score
-                ) VALUES (%s, 'Fail', NOW(), %s, %s, 0)""",
-                (testcase_id, duration_ms, error_msg)
-            )
+            try:
+                cursor.execute(
+                    """INSERT INTO test_runs (
+                        test_case_id, status, run_at, duration_ms, error_message,
+                        health_score, run_type, execution_mode, source, verdict_reason,
+                        worst_severity
+                    ) VALUES (%s, 'Fail', NOW(), %s, %s, 0, %s, %s, %s, %s, %s)""",
+                    (testcase_id, duration_ms, error_msg, 'AUTOMATED', 'HEADLESS',
+                     'MACHINE', f'Crawler failure: {error_msg}'[:500], 'serious')
+                )
+            except Exception:
+                cursor.execute(
+                    """INSERT INTO test_runs (
+                        test_case_id, status, run_at, duration_ms, error_message, health_score
+                    ) VALUES (%s, 'Fail', NOW(), %s, %s, 0)""",
+                    (testcase_id, duration_ms, error_msg)
+                )
             mysql.connection.commit()
             cursor.execute(
                 "UPDATE test_cases SET status = 'Fail' WHERE id = %s",
@@ -3045,7 +3472,7 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
         except Exception:
             pass
 
-        return {'error': error_msg, 'status': 'Fail'}, 500
+        return {'error': error_msg, 'code': 'crawler_failure', 'status': 'Fail'}, 500
 
 
 @runner_bp.route('/runs/<int:testcase_id>', methods=['GET'])
@@ -3058,19 +3485,33 @@ def get_runs(testcase_id):
 
     try:
         cursor = mysql.connection.cursor()
-        cursor.execute(
-            """SELECT id, status, screenshot, run_at, duration_ms, page_load_time_ms,
-                      issues_found, total_page_size_kb, total_requests, health_score,
-                      error_message
-               FROM test_runs WHERE test_case_id = %s
-               ORDER BY run_at DESC LIMIT 20""",
-            (testcase_id,)
-        )
+        try:
+            cursor.execute(
+                """SELECT id, status, screenshot, run_at, duration_ms, page_load_time_ms,
+                          issues_found, total_page_size_kb, total_requests, health_score,
+                          error_message, run_type, execution_mode, source, verdict_reason,
+                          worst_severity
+                   FROM test_runs WHERE test_case_id = %s
+                   ORDER BY run_at DESC LIMIT 20""",
+                (testcase_id,)
+            )
+        except Exception:
+            cursor.execute(
+                """SELECT id, status, screenshot, run_at, duration_ms, page_load_time_ms,
+                          issues_found, total_page_size_kb, total_requests, health_score,
+                          error_message
+                   FROM test_runs WHERE test_case_id = %s
+                   ORDER BY run_at DESC LIMIT 20""",
+                (testcase_id,)
+            )
         runs = cursor.fetchall()
         cursor.close()
         for run in runs:
             if run.get('run_at'):
                 run['run_at'] = run['run_at'].isoformat()
+            run.setdefault('run_type', 'AUTOMATED')
+            run.setdefault('execution_mode', 'HEADLESS')
+            run.setdefault('source', 'MACHINE')
         return jsonify(runs), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
