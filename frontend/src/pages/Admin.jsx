@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  Shield, Users, FolderKanban, Play, Bug, HeartPulse, Loader2,
-  UserCheck, UserX, Trash2, RefreshCw, AlertTriangle,
+  Users, UserCheck, UserX, Shield, Trash2, Loader2, RefreshCw, Menu,
+  FolderKanban, Play, Bug, HeartPulse, AlertTriangle,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -25,6 +25,7 @@ const Stat = ({ value, label, Icon }) => (
 
 const Admin = () => {
   const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -138,22 +139,30 @@ const Admin = () => {
   const totals = overview?.totals || {};
 
   return (
-    <div className="relative flex min-h-screen text-slate-200">
+    <div className="relative flex h-screen overflow-hidden text-slate-200">
       <AmbientBackground />
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 p-8">
+      <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-7xl mx-auto">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="flex justify-between items-center mb-6 gap-4"
         >
-          <div>
-            <h1 className="text-3xl font-display font-bold text-white flex items-center gap-2">
-              <Shield className="w-6 h-6 text-brand-sky" /> Administration
-            </h1>
-            <p className="text-slate-400 mt-1 flex items-center gap-2">
+          <div className="flex items-center gap-4">
+            <button
+              className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div>
+              <h1 className="text-3xl font-display font-bold text-white flex items-center gap-2">
+                <Shield className="w-6 h-6 text-brand-sky" /> Administration
+              </h1>
+              <p className="text-slate-400 mt-1 flex items-center gap-2">
               Every account on this platform
               {refreshing && (
                 <span role="status" aria-live="polite"
@@ -162,6 +171,7 @@ const Admin = () => {
                 </span>
               )}
             </p>
+            </div>
           </div>
           <button onClick={reload}
             className="inline-flex items-center gap-2 glass hover:bg-white/10 text-slate-200 px-5 py-2.5 rounded-xl font-medium transition">

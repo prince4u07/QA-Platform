@@ -5,7 +5,7 @@ import {
   Plus, Bug, AlertCircle, Clock, CheckCircle2, AlertTriangle, Camera,
   X, Link2, ImageOff, Search, ShieldAlert, Accessibility, Smartphone,
   Bot, Eye, Pencil, Trash2, RotateCcw, ArrowRight, Sparkles, Loader2,
-  RefreshCw, MapPin, Code, Lock, FileText,
+  RefreshCw, MapPin, Code, Lock, FileText, Menu,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -85,6 +85,7 @@ const StatTile = ({ value, label, tone, Icon }) => (
 
 const BugTracker = () => {
   const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [bugs, setBugs] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -352,9 +353,9 @@ const BugTracker = () => {
   const hasActiveFilters = filterStatus || filterSeverity || filterCategory || filterProject || filterHasEvidence;
 
   const severityColor = (s) => {
-    if (s === 'Critical') return 'bg-red-500/15 text-red-300 border border-red-500/30';
-    if (s === 'Major') return 'bg-orange-500/15 text-orange-300 border border-orange-500/30';
-    return 'bg-amber-500/15 text-amber-300 border border-amber-500/30';
+    if (s === 'Critical') return 'badge badge-danger';
+    if (s === 'Major') return 'badge badge-warning';
+    return 'badge badge-info';
   };
 
   const severityBorder = (s) => {
@@ -364,10 +365,10 @@ const BugTracker = () => {
   };
 
   const statusColor = (s) => {
-    if (s === 'Open') return 'bg-red-500/15 text-red-300';
-    if (s === 'In Progress') return 'bg-amber-500/15 text-amber-300';
-    if (s === 'Resolved') return 'bg-brand-teal/15 text-brand-teal';
-    return 'bg-white/10 text-slate-400';
+    if (s === 'Open') return 'badge badge-danger';
+    if (s === 'In Progress') return 'badge badge-warning';
+    if (s === 'Resolved') return 'badge badge-success';
+    return 'badge badge-neutral';
   };
 
   const categoryLabel = (c) => CATEGORY_LABEL[c] || c;
@@ -385,20 +386,29 @@ const BugTracker = () => {
     'w-full rounded-xl bg-white/5 border px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 transition';
 
   return (
-    <div className="relative flex min-h-screen text-slate-200">
+    <div className="relative flex h-screen overflow-hidden text-slate-200">
       <AmbientBackground />
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 p-8">
+      <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-7xl mx-auto">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="flex justify-between items-center mb-6 gap-4"
         >
-          <div>
-            <h1 className="text-3xl font-display font-bold text-white">Bug Tracker</h1>
-            <p className="text-slate-400 mt-1">Manage bugs found manually or detected by automated tests</p>
+          <div className="flex items-center gap-4">
+            <button
+              className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div>
+              <h1 className="text-3xl font-display font-bold text-white">Bug Tracker</h1>
+              <p className="text-slate-400 mt-1">Manage bugs found manually or detected by automated tests</p>
+            </div>
           </div>
           <button
             onClick={openCreateModal}
@@ -419,11 +429,11 @@ const BugTracker = () => {
         </div>
 
         {/* Filters */}
-        <div className="glass rounded-2xl p-4 mb-6">
+        <div className="glass-card p-4 mb-6">
           <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm font-medium text-slate-300">Filters:</span>
+            <span className="text-sm font-medium text-slate-300 shrink-0">Filters:</span>
 
-            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={selectClass}>
+            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={`${selectClass} w-full sm:w-auto`}>
               <option value="" className="bg-surface">All Status</option>
               <option value="Open" className="bg-surface">Open</option>
               <option value="In Progress" className="bg-surface">In Progress</option>
@@ -431,34 +441,34 @@ const BugTracker = () => {
               <option value="Closed" className="bg-surface">Closed</option>
             </select>
 
-            <select value={filterSeverity} onChange={(e) => setFilterSeverity(e.target.value)} className={selectClass}>
+            <select value={filterSeverity} onChange={(e) => setFilterSeverity(e.target.value)} className={`${selectClass} w-full sm:w-auto`}>
               <option value="" className="bg-surface">All Severity</option>
               <option value="Critical" className="bg-surface">Critical</option>
               <option value="Major" className="bg-surface">Major</option>
               <option value="Minor" className="bg-surface">Minor</option>
             </select>
 
-            <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className={selectClass}>
+            <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className={`${selectClass} w-full sm:w-auto`}>
               <option value="" className="bg-surface">All Categories</option>
               {Object.keys(CATEGORY_LABEL).map((c) => (
                 <option key={c} value={c} className="bg-surface">{CATEGORY_LABEL[c]}</option>
               ))}
             </select>
 
-            <select value={filterProject} onChange={(e) => setFilterProject(e.target.value)} className={selectClass}>
+            <select value={filterProject} onChange={(e) => setFilterProject(e.target.value)} className={`${selectClass} w-full sm:w-auto`}>
               <option value="" className="bg-surface">All Projects</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id} className="bg-surface">{p.name}</option>
               ))}
             </select>
 
-            <label className="flex items-center gap-2 cursor-pointer ml-1 px-3 py-2 border border-brand-sky/30 rounded-lg bg-brand-sky/10 hover:bg-brand-sky/15 transition">
+            <label className="flex items-center gap-2 cursor-pointer shrink-0 px-3 py-2 border border-brand-sky/30 rounded-lg bg-brand-sky/10 hover:bg-brand-sky/15 transition">
               <input type="checkbox" checked={filterHasEvidence} onChange={(e) => setFilterHasEvidence(e.target.checked)} className="w-4 h-4 accent-brand-sky" />
               <span className="text-sm text-brand-sky font-medium inline-flex items-center gap-1"><Camera className="w-3.5 h-3.5" /> Only with screenshot</span>
             </label>
 
             {hasActiveFilters && (
-              <button onClick={clearFilters} className="text-sm text-brand-sky hover:underline ml-1">Clear filters</button>
+              <button onClick={clearFilters} className="text-sm text-brand-sky hover:underline shrink-0">Clear filters</button>
             )}
           </div>
         </div>
@@ -530,23 +540,23 @@ const BugTracker = () => {
                       <div className="flex flex-wrap gap-2 mt-3">
                         {nextStatus(bug.status) && (
                           <button onClick={() => handleStatusChange(bug.id, nextStatus(bug.status))}
-                            className="inline-flex items-center gap-1 text-xs bg-brand-indigo/15 hover:bg-brand-indigo/25 text-brand-sky px-3 py-1 rounded-lg transition">
+                            className="inline-flex items-center gap-1 text-xs bg-brand-indigo/15 hover:bg-brand-indigo/25 text-brand-sky px-3 py-1 rounded-lg transition whitespace-nowrap">
                             <ArrowRight className="w-3 h-3" /> {nextStatus(bug.status)}
                           </button>
                         )}
                         {bug.status !== 'Open' && (
                           <button onClick={() => handleStatusChange(bug.id, 'Open')}
-                            className="inline-flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg transition">
+                            className="inline-flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg transition whitespace-nowrap">
                             <RotateCcw className="w-3 h-3" /> Reopen
                           </button>
                         )}
-                        <button onClick={() => openDetail(bug)} className="inline-flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg transition">
+                        <button onClick={() => openDetail(bug)} className="inline-flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg transition whitespace-nowrap">
                           <Eye className="w-3 h-3" /> View
                         </button>
-                        <button onClick={() => openEditModal(bug)} className="inline-flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg transition">
+                        <button onClick={() => openEditModal(bug)} className="inline-flex items-center gap-1 text-xs bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg transition whitespace-nowrap">
                           <Pencil className="w-3 h-3" /> Edit
                         </button>
-                        <button onClick={() => handleDelete(bug.id, bug.title)} className="inline-flex items-center gap-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-300 px-3 py-1 rounded-lg transition">
+                        <button onClick={() => handleDelete(bug.id, bug.title)} className="inline-flex items-center gap-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-300 px-3 py-1 rounded-lg transition whitespace-nowrap">
                           <Trash2 className="w-3 h-3" /> Delete
                         </button>
                       </div>
