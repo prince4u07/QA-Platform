@@ -18,6 +18,7 @@ import {
   ChevronRight,
   X,
   Check,
+  Menu,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -33,6 +34,7 @@ import {
 
 const Projects = () => {
   const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -209,9 +211,9 @@ const Projects = () => {
   };
 
   const envColor = (env) => {
-    if (env === 'prod') return 'bg-red-500/10 text-red-300 border border-red-500/20';
-    if (env === 'staging') return 'bg-amber-500/10 text-amber-300 border border-amber-500/20';
-    return 'bg-white/5 text-slate-300 border border-white/10';
+    if (env === 'prod') return 'badge badge-danger';
+    if (env === 'staging') return 'badge badge-warning';
+    return 'badge badge-neutral';
   };
 
   // Format the session captured_at date
@@ -244,22 +246,31 @@ const Projects = () => {
       : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10 hover:border-white/20');
 
   return (
-    <div className="relative flex min-h-screen">
+    <div className="relative flex h-screen overflow-hidden">
       <AmbientBackground />
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 px-6 py-6 max-w-6xl">
+      <div className="flex-1 px-6 py-6 max-w-6xl overflow-y-auto lg:ml-64 mx-auto">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="flex justify-between items-center mb-6 gap-4"
         >
-          <div>
-            <h1 className="text-3xl font-display font-bold text-white">Test <span className="text-gradient">projects</span></h1>
-            <p className="text-sm text-slate-400 mt-1">
-              {totalProjects > 0 ? `${totalProjects} total` : 'Register a site to start auditing it'}
-            </p>
+          <div className="flex items-center gap-4">
+            <button
+              className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div>
+              <h1 className="text-3xl font-display font-bold text-white">Test <span className="text-gradient">projects</span></h1>
+              <p className="text-sm text-slate-400 mt-1">
+                {totalProjects > 0 ? `${totalProjects} total` : 'Register a site to start auditing it'}
+              </p>
+            </div>
           </div>
           <motion.button
             whileHover={{ scale: 1.03 }}

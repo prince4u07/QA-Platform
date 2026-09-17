@@ -12,7 +12,7 @@ import {
   FileText, RefreshCw, BarChart3, FolderKanban, ClipboardList, Play,
   HeartPulse, Bug, CheckCircle2, TrendingUp, Clock, Trophy, Calendar,
   History, Loader2, LineChart as LineChartIcon, PieChart as PieChartIcon,
-  CheckCircle, XCircle,
+  CheckCircle, XCircle, Menu,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -57,6 +57,7 @@ const ChartCard = ({ title, Icon, note, hasData, children }) => (
 
 const Reports = () => {
   const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Two different states, deliberately. `loading` is the very first load, when
   // there is genuinely nothing to show yet. `refreshing` is every load after
@@ -213,12 +214,12 @@ const Reports = () => {
 
   const hasNoData = summary && summary.total_runs === 0 && summary.total_bugs === 0;
 
-  return (
-    <div className="relative flex min-h-screen text-slate-200">
+return (
+    <div className="relative flex h-screen overflow-hidden text-slate-200">
       <AmbientBackground />
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 p-8">
+      <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-7xl mx-auto">
         {/* HEADER */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
@@ -226,10 +227,18 @@ const Reports = () => {
           transition={{ duration: 0.4 }}
           className="flex justify-between items-center mb-6 gap-4"
         >
-          <div>
-            <h1 className="text-3xl font-display font-bold text-white">Reports &amp; Analytics</h1>
-            <p className="text-slate-400 mt-1 flex items-center gap-2">
-              Insights from your testing activity
+          <div className="flex items-center gap-4">
+            <button
+              className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div>
+              <h1 className="text-3xl font-display font-bold text-white">Reports & Analytics</h1>
+              <p className="text-slate-400 mt-1 flex items-center gap-2">
+                Insights from your testing activity
               {/* A quiet marker instead of tearing the dashboard down. The
                   numbers on screen stay readable while the new ones arrive. */}
               {refreshing && (
@@ -239,6 +248,7 @@ const Reports = () => {
                 </span>
               )}
             </p>
+            </div>
           </div>
           <div className="flex gap-3">
             <button

@@ -11,28 +11,32 @@ import {
   Sparkles,
   BarChart3,
   ArrowRight,
+  Menu,
 } from 'lucide-react';
 import axios from '../api/axiosConfig';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
 
-const StatCard = ({ icon: Icon, label, value, accent, delay }) => (
+const StatCard = ({ icon: Icon, label, value, accent, delay, progress }) => (
   <motion.div
     initial={{ opacity: 0, y: 12 }}
     animate={{ opacity: 1, y: 0 }}
     transition={{ duration: 0.4, delay, ease: 'easeOut' }}
-    whileHover={{ y: -3 }}
-    className="glass rounded-2xl p-5 transition-colors hover:bg-white/[0.07] hover:border-brand-indigo/30 hover:shadow-glow cursor-default"
+    whileHover={{ y: -4 }}
+    className="glass-card p-5 group"
   >
-    <div className="flex items-center justify-between">
-      <div>
-        <p className="text-slate-400 text-sm">{label}</p>
-        <p className="text-3xl font-display font-bold text-white mt-1 tabular-nums">{value}</p>
+    <div className="flex items-center justify-between mb-3">
+      <div className={`grid place-items-center w-11 h-11 rounded-xl ${accent} transition-transform group-hover:scale-110`}>
+        <Icon className="w-5 h-5" strokeWidth={2} />
       </div>
-      <div className={`grid place-items-center w-12 h-12 rounded-xl ${accent}`}>
-        <Icon className="w-6 h-6" strokeWidth={2} />
-      </div>
+      {progress !== undefined && (
+        <div className="progress-bar w-16">
+          <div className={`progress-bar-fill ${accent.replace('/15', '').replace('text-', 'bg-')}`} style={{ width: `${progress}%` }} />
+        </div>
+      )}
     </div>
+    <p className="text-slate-400 text-sm mb-1">{label}</p>
+    <p className="text-3xl font-display font-bold text-white tabular-nums leading-none">{value}</p>
   </motion.div>
 );
 
@@ -46,6 +50,8 @@ const QUICK_ACTIONS = [
 
 const Dashboard = () => {
   const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   const getUser = () => {
     try {
       return JSON.parse(localStorage.getItem('user') || '{}');
@@ -145,23 +151,40 @@ const Dashboard = () => {
   const v = (n) => (loading ? '—' : n);
 
   return (
-    <div className="relative flex min-h-screen text-slate-200">
+    <div className="relative flex h-screen overflow-hidden">
       <AmbientBackground />
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 p-8 max-w-6xl">
+      <div className="flex-1 p-8 overflow-y-auto max-w-6xl lg:ml-64 mx-auto">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="mb-8"
         >
-          <h2 className="text-3xl font-display font-bold text-white">
-            Welcome back, <span className="text-gradient">{user.username || 'tester'}</span>
-          </h2>
-          <p className="text-slate-400 mt-1">
-            {loading ? 'Loading…' : `${stats.projects} projects · ${stats.testCases} test cases · ${stats.bugs} open bugs`}
-          </p>
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-4">
+              <button
+                className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Open menu"
+              >
+                <Menu className="w-6 h-6" />
+              </button>
+              <div>
+                <h2 className="text-3xl font-display font-bold text-white">
+                  Welcome back, <span className="text-gradient">{user.username || 'tester'}</span>
+                </h2>
+                <p className="text-slate-400 mt-1">
+                  {loading ? 'Loading…' : `${stats.projects} projects · ${stats.testCases} test cases · ${stats.bugs} open bugs`}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl glass">
+              <span className="status-dot status-online" />
+              <span className="text-sm text-slate-300">All systems operational</span>
+            </div>
+          </div>
         </motion.div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
@@ -175,47 +198,49 @@ const Dashboard = () => {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.15 }}
-          className="glass rounded-2xl p-6 mb-8"
+          className="glass-card p-6 mb-8"
         >
           <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
             <div>
               <h3 className="text-xl font-display font-bold text-white">Run Statistics</h3>
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-slate-500 mt-0.5">
                 {v(stats.totalRuns)} total runs · {v(stats.manualRuns)} manual · {v(stats.automatedRuns)} automated · {v(stats.failed)} failed · {v(stats.critical)} critical open · avg health {v(stats.avgHealth)} · automation {v(stats.automationCoverage)}%
               </p>
             </div>
-            <select value={runTypeFilter} onChange={(e) => setRunTypeFilter(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
-              <option value="" className="bg-slate-900">All runs</option>
-              <option value="MANUAL" className="bg-slate-900">Manual only</option>
-              <option value="AUTOMATED" className="bg-slate-900">Automated only</option>
-            </select>
-            <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
-              <option value="" className="bg-slate-900">Any severity</option>
-              <option value="critical" className="bg-slate-900">Critical</option>
-              <option value="serious" className="bg-slate-900">Serious</option>
-              <option value="moderate" className="bg-slate-900">Moderate</option>
-              <option value="minor" className="bg-slate-900">Minor</option>
-            </select>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
-              className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none">
-              <option value="" className="bg-slate-900">Any status</option>
-              <option value="Pass" className="bg-slate-900">Passed</option>
-              <option value="Fail" className="bg-slate-900">Failed</option>
-            </select>
+            <div className="flex items-center gap-2">
+              <select value={runTypeFilter} onChange={(e) => setRunTypeFilter(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-sky/50 transition">
+                <option value="" className="bg-surface">All runs</option>
+                <option value="MANUAL" className="bg-surface">Manual only</option>
+                <option value="AUTOMATED" className="bg-surface">Automated only</option>
+              </select>
+              <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-sky/50 transition">
+                <option value="" className="bg-surface">Any severity</option>
+                <option value="critical" className="bg-surface">Critical</option>
+                <option value="serious" className="bg-surface">Serious</option>
+                <option value="moderate" className="bg-surface">Moderate</option>
+                <option value="minor" className="bg-surface">Minor</option>
+              </select>
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-sky/50 transition">
+                <option value="" className="bg-surface">Any status</option>
+                <option value="Pass" className="bg-surface">Passed</option>
+                <option value="Fail" className="bg-surface">Failed</option>
+              </select>
+            </div>
           </div>
           {filteredRuns && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
-                ['Total', filteredRuns.total],
-                ['Passed', filteredRuns.passed],
-                ['Failed', filteredRuns.failed],
-                ['Avg health', filteredRuns.avg_health_score],
-              ].map(([label, value]) => (
-                <div key={label} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
-                  <div className="text-xs text-slate-500">{label}{runTypeFilter ? ` (${runTypeFilter})` : ''}</div>
-                  <div className="text-xl font-bold text-white">{value}</div>
+                ['Total', filteredRuns.total, 'text-white'],
+                ['Passed', filteredRuns.passed, 'text-brand-teal'],
+                ['Failed', filteredRuns.failed, 'text-red-400'],
+                ['Avg health', filteredRuns.avg_health_score, 'text-brand-sky'],
+              ].map(([label, value, tone]) => (
+                <div key={label} className="rounded-xl border border-white/10 bg-white/[0.03] p-4 hover:bg-white/[0.05] transition">
+                  <div className="text-xs text-slate-500 mb-1">{label}{runTypeFilter ? ` (${runTypeFilter})` : ''}</div>
+                  <div className={`text-2xl font-bold ${tone}`}>{value}</div>
                 </div>
               ))}
             </div>
@@ -226,10 +251,18 @@ const Dashboard = () => {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.2 }}
-          className="glass rounded-2xl p-6"
+          className="glass-card p-6"
         >
-          <h3 className="text-xl font-display font-bold text-white mb-1">Quick Actions</h3>
-          <p className="text-sm text-slate-500 mb-4">Jump into common tasks.</p>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-xl font-display font-bold text-white">Quick Actions</h3>
+              <p className="text-sm text-slate-500 mt-0.5">Jump into common tasks</p>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="w-2 h-2 rounded-full bg-brand-teal animate-glow-pulse" />
+              System Active
+            </div>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {QUICK_ACTIONS.map((action, i) => {
               const Icon = action.icon || ClipboardList;
@@ -239,19 +272,19 @@ const Dashboard = () => {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.3, delay: 0.2 + i * 0.05 }}
-                  whileHover={{ y: -2 }}
+                  whileHover={{ y: -3 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={() => navigate(action.path)}
                   className="group flex items-center gap-3 p-4 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.07] hover:border-brand-indigo/40 hover:shadow-glow transition-all text-left"
                 >
-                  <span className="grid place-items-center w-9 h-9 rounded-lg bg-brand-indigo/15 text-brand-sky group-hover:text-brand-teal transition-colors">
+                  <span className="grid place-items-center w-10 h-10 rounded-xl bg-brand-indigo/15 text-brand-sky group-hover:text-brand-teal group-hover:bg-brand-indigo/25 transition-all">
                     <Icon className="w-[18px] h-[18px]" strokeWidth={2} />
                   </span>
                   <span className="min-w-0">
                     <span className="block font-medium text-slate-200">{action.label}</span>
                     {action.hint && <span className="block text-xs text-slate-500 mt-0.5">{action.hint}</span>}
                   </span>
-                  <ArrowRight className="w-4 h-4 ml-auto shrink-0 text-slate-600 group-hover:text-brand-sky group-hover:translate-x-0.5 transition" />
+                  <ArrowRight className="w-4 h-4 ml-auto shrink-0 text-slate-600 group-hover:text-brand-sky group-hover:translate-x-1 transition-all" />
                 </motion.button>
               );
             })}

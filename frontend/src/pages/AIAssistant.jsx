@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bot, Send, AlertTriangle, MessageSquare, Loader2 } from 'lucide-react';
+import { Bot, Send, AlertTriangle, MessageSquare, Loader2, Menu } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
 import { chatWithAi, checkAiHealth } from '../api/ai';
 
 const AIAssistant = () => {
   const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
 
   const [messages, setMessages] = useState([
@@ -157,22 +158,31 @@ const AIAssistant = () => {
     });
   };
 
-  return (
-    <div className="relative flex min-h-screen text-slate-200">
+return (
+    <div className="relative flex h-screen overflow-hidden text-slate-200">
       <AmbientBackground />
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 flex flex-col h-screen">
+      <div className="flex-1 flex flex-col h-screen overflow-hidden lg:ml-64">
         {/* Header */}
-        <div className="glass-strong border-b border-white/10 px-8 py-4 flex justify-between items-center gap-4">
-          <div>
-            <h1 className="text-2xl font-display font-bold text-white flex items-center gap-2">
-              <span className="grid place-items-center w-8 h-8 rounded-lg bg-brand-gradient shadow-glow">
-                <Bot className="w-4 h-4 text-white" />
-              </span>
-              AI Assistant
-            </h1>
-            <p className="text-sm text-slate-400 mt-0.5">Powered by Gemini · Ask anything about testing &amp; QA</p>
+        <div className="glass-strong border-b border-white/10 px-8 py-4 flex justify-between items-center gap-4 max-w-7xl mx-auto w-full">
+          <div className="flex items-center gap-4">
+            <button
+              className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div>
+              <h1 className="text-2xl font-display font-bold text-white flex items-center gap-2">
+                <span className="grid place-items-center w-8 h-8 rounded-lg bg-brand-gradient shadow-glow">
+                  <Bot className="w-4 h-4 text-white" />
+                </span>
+                AI Assistant
+              </h1>
+              <p className="text-sm text-slate-400 mt-0.5">Powered by Gemini · Ask anything about testing & QA</p>
+            </div>
           </div>
 
           <div className="flex items-center gap-4">
