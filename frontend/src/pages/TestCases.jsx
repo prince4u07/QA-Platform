@@ -7,6 +7,7 @@ import {
   Package, Repeat, Link2, Bug, ImageOff, Search, ShieldAlert,
   Accessibility, Camera, Loader2, Inbox, PartyPopper,
   ChevronDown, ChevronRight, Network, AlertTriangle,
+  Menu,
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
@@ -399,6 +400,7 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
 
 const TestCases = () => {
   const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [projects, setProjects] = useState([]);
   const [testCases, setTestCases] = useState([]);
@@ -529,15 +531,15 @@ const TestCases = () => {
   }, [showResultModal, runResult]);
 
   const priorityColor = (p) => {
-    if (p === 'High') return 'bg-red-500/15 text-red-300';
-    if (p === 'Medium') return 'bg-amber-500/15 text-amber-300';
-    return 'bg-brand-sky/15 text-brand-sky';
+    if (p === 'High') return 'badge badge-danger';
+    if (p === 'Medium') return 'badge badge-warning';
+    return 'badge badge-info';
   };
 
   const statusColor = (s) => {
-    if (s === 'Pass') return 'bg-brand-teal/15 text-brand-teal';
-    if (s === 'Fail') return 'bg-red-500/15 text-red-300';
-    return 'bg-white/10 text-slate-400';
+    if (s === 'Pass') return 'badge badge-success';
+    if (s === 'Fail') return 'badge badge-danger';
+    return 'badge badge-neutral';
   };
 
   // ===== Derived values =====
@@ -987,22 +989,33 @@ const TestCases = () => {
       : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/5');
 
   return (
-    <div className="relative flex min-h-screen text-slate-200">
+    <div className="relative flex h-screen overflow-hidden text-slate-200">
       <AmbientBackground />
-      <Sidebar />
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 p-8">
+      <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-7xl mx-auto">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
           className="flex justify-between items-center mb-6 gap-4"
         >
-          <div>
-            <h1 className="text-3xl font-display font-bold text-white">Test Cases</h1>
-            <p className="text-slate-400 mt-1">Define manual and automated tests for your projects</p>
+          <div className="flex items-center gap-4">
+            <button
+              className="lg:hidden p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div>
+              <h1 className="text-3xl font-display font-bold text-white">Test Cases</h1>
+              <p className="text-slate-400 mt-1">Define manual and automated tests for your projects</p>
+            </div>
           </div>
-          <button
+          <motion.button
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={openCreateModal}
             disabled={projects.length === 0}
             className={
@@ -1013,12 +1026,12 @@ const TestCases = () => {
             }
           >
             <Plus className="w-4 h-4" /> New Test Case
-          </button>
+          </motion.button>
         </motion.div>
 
         {/* The two modes answer different questions. Saying so up front is
             what stops people reaching for the wrong one. */}
-        <div className="glass rounded-2xl p-4 mb-6 grid gap-3 sm:grid-cols-2 text-sm">
+        <div className="glass-card p-4 mb-6 grid gap-3 sm:grid-cols-2 text-sm">
           <div className="flex items-start gap-2.5">
             <FlaskConical className="w-4 h-4 mt-0.5 text-brand-indigo flex-shrink-0" />
             <p className="text-slate-400">
@@ -1038,21 +1051,22 @@ const TestCases = () => {
         </div>
 
         {projects.length === 0 && (
-          <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-3 rounded-xl mb-6 text-sm">
+          <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-3 rounded-xl mb-6 text-sm flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
             You need at least one project before creating test cases.{' '}
-            <a href="/projects" className="underline font-medium text-amber-100">Create a project first</a>
+            <a href="/projects" className="underline font-medium text-amber-100 hover:text-white transition">Create a project first</a>
           </div>
         )}
 
         {projects.length > 0 && (
-          <div className="glass rounded-2xl p-4 mb-6 flex flex-wrap items-center gap-4">
+          <div className="glass-card p-4 mb-6 flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
               <label htmlFor="filter-project" className="text-sm font-medium text-slate-300">Project:</label>
               <select
                 id="filter-project"
                 value={selectedProject}
                 onChange={(e) => setSelectedProject(e.target.value)}
-                className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-sky/60"
+                className="px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-sky/50 transition"
               >
                 <option value="" className="bg-surface">All Projects</option>
                 {projects.map((p) => (
@@ -1071,164 +1085,204 @@ const TestCases = () => {
         )}
 
         {loading ? (
-          <div className="flex items-center justify-center gap-2 py-20 text-slate-400">
-            <Loader2 className="w-5 h-5 animate-spin" /> Loading test cases...
+          <div className="space-y-4">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="glass-card p-5 space-y-4 animate-pulse">
+                <div className="flex gap-3">
+                  <div className="skeleton w-16 h-4" />
+                  <div className="skeleton w-20 h-4" />
+                  <div className="skeleton w-24 h-4" />
+                </div>
+                <div className="skeleton w-3/4 h-5" />
+                <div className="skeleton w-full h-16" />
+                <div className="flex gap-2">
+                  <div className="skeleton w-24 h-8" />
+                  <div className="skeleton w-24 h-8" />
+                  <div className="skeleton w-24 h-8" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : projects.length === 0 ? null : testCases.length === 0 ? (
-          <div className="glass rounded-2xl p-12 text-center">
-            <div className="grid place-items-center w-16 h-16 mx-auto rounded-2xl bg-brand-indigo/15 text-brand-indigo mb-4">
+          <div className="empty-state glass-card">
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.4, delay: 0.1 }}
+              className="empty-state-icon bg-brand-indigo/15 text-brand-indigo animate-float"
+            >
               <FlaskConical className="w-8 h-8" />
-            </div>
-            <h3 className="text-xl font-display font-semibold text-white mb-2">No test cases yet</h3>
-            <p className="text-slate-400 mb-6">
-              {selectedProject ? 'Create your first test case to start testing' : 'Pick a project above, or create a new test case'}
-            </p>
-            <button
+            </motion.div>
+            <motion.h3
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.2 }}
+              className="empty-state-title"
+            >
+              {selectedProject ? 'No test cases in this project' : 'No test cases yet'}
+            </motion.h3>
+            <motion.p
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.25 }}
+              className="empty-state-description"
+            >
+              {selectedProject
+                ? 'Create your first test case to start testing this project'
+                : 'Pick a project above, or create a new test case to begin'}
+            </motion.p>
+            <motion.button
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.3 }}
               onClick={openCreateModal}
-              className="inline-flex items-center gap-2 bg-brand-gradient text-white px-6 py-3 rounded-xl font-medium shadow-glow"
+              className="inline-flex items-center gap-2 bg-brand-gradient text-white px-6 py-3 rounded-xl font-medium shadow-glow hover:shadow-glow-teal transition-all hover:-translate-y-0.5"
             >
               <Plus className="w-4 h-4" /> Create your first test case
-            </button>
+            </motion.button>
           </div>
         ) : (
           <div className="space-y-4">
-            {testCases.map((tc, i) => (
-              <motion.div
-                key={tc.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: Math.min(i * 0.03, 0.25) }}
-                className="glass rounded-2xl p-5 hover:bg-white/[0.07] transition-colors"
-              >
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + priorityColor(tc.priority)}>
-                        {(tc.priority || 'medium').toUpperCase()}
-                      </span>
-                      <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + statusColor(tc.status)}>
-                        {tc.status}
-                      </span>
-                      {tc.test_type === 'automated' ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-indigo/15 text-brand-indigo">
-                          <Bot className="w-3.5 h-3.5" /> Automated
+            {testCases.map((tc, i) => {
+              const isRunning = runningIds.has(tc.id);
+              const progress = runProgressMap.get(tc.id);
+              return (
+                <motion.div
+                  key={tc.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: Math.min(i * 0.03, 0.25) }}
+                  whileHover={{ y: -2 }}
+                  className="glass-card p-5 group"
+                >
+                  <div className="flex justify-between items-start gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + priorityColor(tc.priority)}>
+                          {(tc.priority || 'medium').toUpperCase()}
                         </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-sky/15 text-brand-sky">
-                          <FlaskConical className="w-3.5 h-3.5" /> Manual
+                        <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + statusColor(tc.status)}>
+                          {tc.status}
                         </span>
-                      )}
-                      {!selectedProject && tc.project_name && (
-                        <span className="text-xs text-slate-500">in {tc.project_name}</span>
-                      )}
-                    </div>
+                        {tc.test_type === 'automated' ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-indigo/15 text-brand-indigo">
+                            <Bot className="w-3.5 h-3.5" /> Automated
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md bg-brand-sky/15 text-brand-sky">
+                            <FlaskConical className="w-3.5 h-3.5" /> Manual
+                          </span>
+                        )}
+                        {!selectedProject && tc.project_name && (
+                          <span className="text-xs text-slate-500">in {tc.project_name}</span>
+                        )}
+                      </div>
 
-                    <h3 className="text-lg font-display font-bold text-white">{tc.title}</h3>
+                      <h3 className="text-lg font-display font-bold text-white group-hover:text-brand-sky transition-colors">{tc.title}</h3>
 
-                    {tc.description && <p className="text-sm text-slate-400 mt-1">{tc.description}</p>}
+                      {tc.description && <p className="text-sm text-slate-400 mt-1">{tc.description}</p>}
 
-                    <div className="mt-3 bg-white/5 border border-white/10 rounded-xl p-3">
-                      <p className="text-xs font-semibold text-slate-500 mb-1">STEPS</p>
-                      <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">{tc.steps}</pre>
-                    </div>
+                      <div className="mt-3 bg-white/5 border border-white/10 rounded-xl p-3">
+                        <p className="text-xs font-semibold text-slate-500 mb-1">STEPS</p>
+                        <pre className="text-sm text-slate-300 whitespace-pre-wrap font-sans">{tc.steps}</pre>
+                      </div>
 
-                    <div className="mt-2">
-                      <p className="text-xs font-semibold text-slate-500">EXPECTED RESULT</p>
-                      <p className="text-sm text-slate-300">{tc.expected_result}</p>
+                      <div className="mt-2">
+                        <p className="text-xs font-semibold text-slate-500">EXPECTED RESULT</p>
+                        <p className="text-sm text-slate-300">{tc.expected_result}</p>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-white/10">
-                  {tc.test_type === 'automated' && (() => {
-                    const isRunning = runningIds.has(tc.id);
-                    const progress = runProgressMap.get(tc.id);
-                    return (
+                  <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-white/10">
+                    {tc.test_type === 'automated' && (() => {
+                      return (
+                        <button
+                          onClick={() => handleRun(tc)}
+                          disabled={isRunning}
+                          className={
+                            'inline-flex items-center gap-1.5 text-sm px-4 py-1.5 rounded-lg transition font-medium ' +
+                            (isRunning
+                              ? 'bg-brand-indigo/20 text-brand-indigo cursor-wait'
+                              : 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal')
+                          }
+                        >
+                          {isRunning ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              {progress
+                                ? `Testing ${progress.tested}/${progress.total}...`
+                                : 'Starting...'}
+                            </>
+                          ) : (
+                            <><Play className="w-4 h-4" /> Run Full Site Test</>
+                          )}
+                        </button>
+                      );
+                    })()}
+                    {runningIds.has(tc.id) && (() => {
+                      const p = runProgressMap.get(tc.id);
+                      if (!p) return null;
+                      const cur = p.current_page || p.current;
+                      return (
+                        <span className="text-xs text-slate-400 truncate max-w-[320px]"
+                          title={[
+                            cur,
+                            p.current_category ? `stage: ${p.current_category}` : null,
+                            typeof p.pages_tested === 'number' ? `pages ${p.pages_tested}/${p.total}` : null,
+                          ].filter(Boolean).join(' · ')}>
+                          {typeof p.pages_tested === 'number' && typeof p.total === 'number'
+                            ? `${p.pages_tested}/${p.total} · ` : ''}
+                          {cur || p.phase || 'Working…'}
+                          {p.current_category ? ` (${p.current_category})` : ''}
+                        </span>
+                      );
+                    })()}
+                    {runningIds.has(tc.id) && runJobIds.has(tc.id) && (
                       <button
-                        onClick={() => handleRun(tc)}
-                        disabled={isRunning}
+                        onClick={() => handleCancelRun(tc.id)}
+                        title="Stop this run. Whatever's already been crawled is kept."
+                        className="inline-flex items-center gap-1.5 text-sm bg-red-500/10 hover:bg-red-500/20 text-red-300 px-3 py-1.5 rounded-lg transition">
+                        <XCircle className="w-3.5 h-3.5" /> Cancel
+                      </button>
+                    )}
+
+                    {tc.test_type === 'manual' && (
+                      <button onClick={() => openManualRun(tc)}
+                        disabled={manualRunFor !== null}
                         className={
                           'inline-flex items-center gap-1.5 text-sm px-4 py-1.5 rounded-lg transition font-medium ' +
-                          (isRunning
-                            ? 'bg-brand-indigo/20 text-brand-indigo cursor-wait'
-                            : 'bg-brand-gradient text-white shadow-glow')
+                          (manualRunFor !== null
+                            ? 'bg-white/5 text-slate-500 cursor-not-allowed'
+                            : 'bg-brand-gradient text-white shadow-glow hover:shadow-glow-teal')
                         }
-                      >
-                        {isRunning ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            {progress
-                              ? `Testing ${progress.tested}/${progress.total}...`
-                              : 'Starting...'}
-                          </>
-                        ) : (
-                          <><Play className="w-4 h-4" /> Run Full Site Test</>
-                        )}
+                        title="Open a browser to walk through this test, with auto screenshots">
+                        <Play className="w-4 h-4" /> Run Manual Test
                       </button>
-                    );
-                  })()}
-                  {runningIds.has(tc.id) && (() => {
-                    const p = runProgressMap.get(tc.id);
-                    if (!p) return null;
-                    const cur = p.current_page || p.current;
-                    return (
-                      <span className="text-xs text-slate-400 truncate max-w-[320px]"
-                        title={[
-                          cur,
-                          p.current_category ? `stage: ${p.current_category}` : null,
-                          typeof p.pages_tested === 'number' ? `pages ${p.pages_tested}/${p.total}` : null,
-                        ].filter(Boolean).join(' · ')}>
-                        {typeof p.pages_tested === 'number' && typeof p.total === 'number'
-                          ? `${p.pages_tested}/${p.total} · ` : ''}
-                        {cur || p.phase || 'Working…'}
-                        {p.current_category ? ` (${p.current_category})` : ''}
-                      </span>
-                    );
-                  })()}
-                  {runningIds.has(tc.id) && runJobIds.has(tc.id) && (
-                    <button
-                      onClick={() => handleCancelRun(tc.id)}
-                      title="Stop this run. Whatever's already been crawled is kept."
-                      className="inline-flex items-center gap-1.5 text-sm bg-red-500/10 hover:bg-red-500/20 text-red-300 px-3 py-1.5 rounded-lg transition">
-                      <XCircle className="w-3.5 h-3.5" /> Cancel
-                    </button>
-                  )}
+                    )}
 
-                  {tc.test_type === 'manual' && (
-                    <button onClick={() => openManualRun(tc)}
-                      disabled={manualRunFor !== null}
-                      className={
-                        'inline-flex items-center gap-1.5 text-sm px-4 py-1.5 rounded-lg transition font-medium ' +
-                        (manualRunFor !== null
-                          ? 'bg-white/5 text-slate-500 cursor-not-allowed'
-                          : 'bg-brand-gradient text-white shadow-glow')
-                      }
-                      title="Open a browser to walk through this test, with auto screenshots">
-                      <Play className="w-4 h-4" /> Run Manual Test
+                    {/* Both modes record a run, so both have a history worth
+                        reading. Pass/Fail is never set by hand here: it is the
+                        outcome of a run, not a label someone applies. */}
+                    <button onClick={() => openHistory(tc)}
+                      className="inline-flex items-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1.5 rounded-lg transition">
+                      <History className="w-3.5 h-3.5" /> History
                     </button>
-                  )}
 
-                  {/* Both modes record a run, so both have a history worth
-                      reading. Pass/Fail is never set by hand here: it is the
-                      outcome of a run, not a label someone applies. */}
-                  <button onClick={() => openHistory(tc)}
-                    className="inline-flex items-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1.5 rounded-lg transition">
-                    <History className="w-3.5 h-3.5" /> History
-                  </button>
-
-                  <div className="ml-auto flex gap-2">
-                    <button onClick={() => openEditModal(tc)}
-                      className="inline-flex items-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-1.5 rounded-lg transition">
-                      <Pencil className="w-3.5 h-3.5" /> Edit
-                    </button>
-                    <button onClick={() => handleDelete(tc.id, tc.title)}
-                      className="inline-flex items-center gap-1.5 text-sm bg-red-500/10 hover:bg-red-500/20 text-red-300 px-4 py-1.5 rounded-lg transition">
-                      <Trash2 className="w-3.5 h-3.5" /> Delete
-                    </button>
+                    <div className="ml-auto flex gap-2">
+                      <button onClick={() => openEditModal(tc)}
+                        className="inline-flex items-center gap-1.5 text-sm bg-white/5 hover:bg-white/10 text-slate-300 px-4 py-1.5 rounded-lg transition">
+                        <Pencil className="w-3.5 h-3.5" /> Edit
+                      </button>
+                      <button onClick={() => handleDelete(tc.id, tc.title)}
+                        className="inline-flex items-center gap-1.5 text-sm bg-red-500/10 hover:bg-red-500/20 text-red-300 px-4 py-1.5 rounded-lg transition">
+                        <Trash2 className="w-3.5 h-3.5" /> Delete
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </motion.div>
-            ))}
+                </motion.div>
+              );
+            })}
           </div>
         )}
       </div>
