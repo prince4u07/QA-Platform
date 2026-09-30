@@ -45,7 +45,7 @@ def get_user_project(user_id, project_id):
     """Returns project if user owns it, else None"""
     cursor = mysql.connection.cursor()
     cursor.execute(
-        "SELECT id, name, base_url, description, environment FROM projects WHERE id = %s AND user_id = %s",
+        "SELECT id, name, base_url, description FROM projects WHERE id = %s AND user_id = %s",
         (project_id, user_id)
     )
     result = cursor.fetchone()
