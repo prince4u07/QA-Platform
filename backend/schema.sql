@@ -80,7 +80,6 @@ CREATE TABLE IF NOT EXISTS projects (
     name                VARCHAR(100) NOT NULL,
     description         TEXT,
     base_url            VARCHAR(255),
-    environment         VARCHAR(20)  DEFAULT 'dev',    -- dev | staging | prod
     has_active_session  BOOLEAN      DEFAULT FALSE,
     session_captured_at TIMESTAMP    NULL,
     created_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
