@@ -174,7 +174,7 @@ def user_detail(user_id):
             return jsonify({'error': 'User not found'}), 404
 
         cursor.execute("""
-            SELECT p.id, p.name, p.base_url, p.environment, p.created_at,
+            SELECT p.id, p.name, p.base_url, p.created_at,
                    (SELECT COUNT(*) FROM test_cases tc WHERE tc.project_id = p.id) AS test_cases
             FROM projects p WHERE p.user_id = %s ORDER BY p.created_at DESC
         """, (user_id,))
