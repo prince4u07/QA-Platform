@@ -115,7 +115,7 @@ def suggest_test_cases(project_info):
     """
     Suggests test case ideas for a project based on its details.
 
-    project_info: dict with name, base_url, description, environment
+    project_info: dict with name, base_url, description
 
     Returns: list of test case suggestions
     """
@@ -123,7 +123,6 @@ def suggest_test_cases(project_info):
 Project name: {project_info.get('name', '')}
 URL: {project_info.get('base_url', '')}
 Description: {project_info.get('description', '(none)')}
-Environment: {project_info.get('environment', 'dev')}
 """
 
     prompt = f"""You are a QA expert. Based on this web project, suggest 8 important test cases to run.

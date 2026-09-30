@@ -52,7 +52,6 @@ const Projects = () => {
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [description, setDescription] = useState('');
-  const [environment, setEnvironment] = useState('dev');
 
   // For "Open & Login" button feedback
   const [openingLoginFor, setOpeningLoginFor] = useState(null);
@@ -101,7 +100,6 @@ const Projects = () => {
     setName('');
     setBaseUrl('');
     setDescription('');
-    setEnvironment('dev');
     setEditingId(null);
     setError('');
   };
@@ -115,7 +113,6 @@ const Projects = () => {
     setName(p.name);
     setBaseUrl(p.base_url);
     setDescription(p.description || '');
-    setEnvironment(p.environment);
     setEditingId(p.id);
     setError('');
     setShowModal(true);
@@ -137,7 +134,6 @@ const Projects = () => {
       name: name.trim(),
       base_url: baseUrl.trim(),
       description: description.trim(),
-      environment,
     };
 
     try {
@@ -210,12 +206,6 @@ const Projects = () => {
     }
   };
 
-  const envColor = (env) => {
-    if (env === 'prod') return 'badge badge-danger';
-    if (env === 'staging') return 'badge badge-warning';
-    return 'badge badge-neutral';
-  };
-
   // Format the session captured_at date
   const formatSessionAge = (capturedAt) => {
     if (!capturedAt) return null;
@@ -239,11 +229,6 @@ const Projects = () => {
   const inputBase =
     'w-full rounded-xl bg-white/5 border border-white/10 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 ' +
     'focus:outline-none focus:ring-2 focus:ring-brand-sky/60 focus:border-brand-sky/40 transition';
-  const toggleClass = (active) =>
-    'flex-1 cursor-pointer px-3 py-2 border rounded-xl text-center text-sm transition-all ' +
-    (active
-      ? 'border-brand-indigo/50 bg-brand-indigo/15 text-white font-medium shadow-glow'
-      : 'border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10 hover:border-white/20');
 
   return (
     <div className="relative flex h-screen overflow-hidden">
@@ -326,9 +311,6 @@ const Projects = () => {
                         <h3 className="text-[15px] font-semibold text-white truncate flex-1">
                           {p.name}
                         </h3>
-                        <span className={'text-[11px] font-medium px-2 py-0.5 rounded ' + envColor(p.environment)}>
-                          {p.environment.toUpperCase()}
-                        </span>
                       </div>
 
                       <div className="mb-2.5 flex flex-wrap gap-1.5">
@@ -529,28 +511,10 @@ const Projects = () => {
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Optional note about what this covers"
-                  rows="2"
+                  placeholder="What this project covers, which environments/URLs matter, anything your testers should know"
+                  rows="3"
                   className={inputBase}
                 />
-              </div>
-
-              <div>
-                <label className="block text-slate-300 text-[13px] font-medium mb-1">Environment</label>
-                <div className="flex gap-2">
-                  {['dev', 'staging', 'prod'].map((env) => (
-                    <label key={env} className={toggleClass(environment === env) + ' capitalize'}>
-                      <input
-                        type="radio"
-                        value={env}
-                        checked={environment === env}
-                        onChange={(e) => setEnvironment(e.target.value)}
-                        className="hidden"
-                      />
-                      {env}
-                    </label>
-                  ))}
-                </div>
               </div>
 
               {!editingId && (

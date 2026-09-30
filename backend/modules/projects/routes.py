@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 projects_bp = Blueprint('projects', __name__)
 mysql = None
 
-ALLOWED_ENVS = {'dev', 'staging', 'prod'}
 SESSIONS_DIR = os.path.join('static', 'uploads', 'sessions')
 
 
@@ -32,7 +31,6 @@ def _row_to_dict(r):
         'name': r['name'],
         'description': r['description'],
         'base_url': r['base_url'],
-        'environment': r['environment'],
         'created_at': r['created_at'].isoformat() if r['created_at'] else None,
         'has_active_session': bool(r['has_active_session']) if r['has_active_session'] is not None else False,
         'session_captured_at': r['session_captured_at'].isoformat() if r['session_captured_at'] else None,
@@ -42,7 +40,7 @@ def _row_to_dict(r):
 def _get_owned(project_id, user_id):
     cur = mysql.connection.cursor()
     cur.execute(
-        """SELECT id, name, description, base_url, environment, created_at,
+        """SELECT id, name, description, base_url, created_at,
                   has_active_session, session_captured_at
            FROM projects
            WHERE id=%s AND user_id=%s""",
@@ -86,7 +84,7 @@ def list_projects():
     
     # Get paginated results
     cur.execute(
-        """SELECT id, name, description, base_url, environment, created_at,
+        """SELECT id, name, description, base_url, created_at,
                   has_active_session, session_captured_at
            FROM projects
            WHERE user_id=%s
@@ -118,21 +116,18 @@ def create_project():
     name = (data.get('name') or '').strip()
     base_url = (data.get('base_url') or '').strip()
     description = (data.get('description') or '').strip()
-    environment = (data.get('environment') or 'dev').strip().lower()
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
     if not (base_url.startswith('http://') or base_url.startswith('https://')):
         return jsonify({'error': 'Valid URL required (http:// or https://)'}), 400
-    if environment not in ALLOWED_ENVS:
-        return jsonify({'error': 'Invalid environment'}), 400
 
     cur = mysql.connection.cursor()
     cur.execute(
         """INSERT INTO projects
-           (user_id, name, description, base_url, environment, has_active_session)
-           VALUES (%s, %s, %s, %s, %s, FALSE)""",
-        (_uid(), name, description, base_url, environment)
+           (user_id, name, description, base_url, has_active_session)
+           VALUES (%s, %s, %s, %s, FALSE)""",
+        (_uid(), name, description, base_url)
     )
     project_id = cur.lastrowid
     mysql.connection.commit()
@@ -152,12 +147,9 @@ def update_project(project_id):
     data = request.get_json() or {}
     name = (data.get('name') or project['name']).strip()
     description = (data.get('description') or '').strip()
-    environment = (data.get('environment') or project['environment']).strip().lower()
 
     if len(name) < 3:
         return jsonify({'error': 'Name must be at least 3 characters'}), 400
-    if environment not in ALLOWED_ENVS:
-        return jsonify({'error': 'Invalid environment'}), 400
 
     new_base_url = project['base_url']
     url_changed = False
@@ -175,17 +167,17 @@ def update_project(project_id):
         _clear_session_file(project_id)
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s, environment=%s,
+               SET name=%s, description=%s, base_url=%s,
                    has_active_session=FALSE, session_captured_at=NULL
                WHERE id=%s""",
-            (name, description, new_base_url, environment, project_id)
+            (name, description, new_base_url, project_id)
         )
     else:
         cur.execute(
             """UPDATE projects
-               SET name=%s, description=%s, base_url=%s, environment=%s
+               SET name=%s, description=%s, base_url=%s
                WHERE id=%s""",
-            (name, description, new_base_url, environment, project_id)
+            (name, description, new_base_url, project_id)
         )
     mysql.connection.commit()
     cur.close()
