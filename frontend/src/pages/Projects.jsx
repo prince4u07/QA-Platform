@@ -22,6 +22,9 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import AuthGateBanner from '../components/AuthGateBanner';
+import { useAuth } from '../contexts/useAuth';
+import { useRequireAuth } from '../hooks/useRequireAuth';
 import {
   getProjects,
   createProject,
@@ -37,7 +40,7 @@ const Projects = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [projects, setProjects] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'));
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState('');
@@ -65,7 +68,6 @@ const Projects = () => {
 
   useEffect(() => {
     if (!localStorage.getItem('token')) {
-      navigate('/login');
       return;
     }
 
@@ -77,10 +79,7 @@ const Projects = () => {
         setTotalPages(res.data.pagination.pages);
         setTotalProjects(res.data.pagination.total);
       } catch (error) {
-        if (error.response?.status === 401) {
-          localStorage.clear();
-          navigate('/login');
-        } else {
+        if (error.response?.status !== 401) {
           setError('Failed to load projects');
         }
       } finally {
@@ -105,6 +104,8 @@ const Projects = () => {
   };
 
   const openCreateModal = () => {
+    if (!requireAuth()) return;
+
     resetForm();
     setShowModal(true);
   };
@@ -230,12 +231,18 @@ const Projects = () => {
     'w-full rounded-xl bg-white/5 border border-white/10 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 ' +
     'focus:outline-none focus:ring-2 focus:ring-brand-sky/60 focus:border-brand-sky/40 transition';
 
+  const { isAuthenticated } = useAuth();
+  const requireAuth = useRequireAuth();
+
   return (
     <div className="relative flex h-screen overflow-hidden">
       <AmbientBackground />
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 px-6 py-6 max-w-6xl overflow-y-auto lg:ml-64 mx-auto">
+        {!isAuthenticated && (
+          <AuthGateBanner message="You can browse this page, but projects are private. Sign in to create, edit and delete them." />
+        )}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -436,7 +443,8 @@ const Projects = () => {
 
       {/* CREATE / EDIT MODAL */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -555,7 +563,8 @@ const Projects = () => {
 
       {/* MANUAL LOGIN PROMPT */}
       {loginProject && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}

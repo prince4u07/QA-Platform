@@ -16,6 +16,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import Reports from './Reports';
+import AuthProvider from '../contexts/AuthProvider';
 import * as reportsApi from '../api/reports';
 
 // The ambient background renders a three.js particle scene. It has nothing to
@@ -52,13 +53,16 @@ function apiReturns(overrides = {}) {
 function renderReports() {
   return render(
     <MemoryRouter>
-      <Reports />
+      <AuthProvider>
+        <Reports />
+      </AuthProvider>
     </MemoryRouter>
   );
 }
 
 beforeEach(() => {
   localStorage.setItem('token', 'test-token');
+  localStorage.setItem('user', JSON.stringify({ id: 1, username: 'prince', role: 'tester' }));
   apiReturns();
 });
 

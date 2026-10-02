@@ -8,10 +8,12 @@ import {
   Bug,
   Sparkles,
   BarChart3,
+  LogIn,
   LogOut,
   ShieldCheck,
   Shield,
 } from 'lucide-react';
+import { useAuth } from '../contexts/useAuth';
 
 const navItems = [
   { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
@@ -43,22 +45,17 @@ const Sidebar = ({ isOpen: controlledIsOpen, onClose }) => {
   const isSidebarOpen = controlledIsOpen !== undefined ? controlledIsOpen : isOpen;
   const setSidebarOpen = controlledIsOpen !== undefined ? onClose : setIsOpen;
 
-  const getUser = () => {
-    try {
-      return JSON.parse(localStorage.getItem('user') || '{}');
-    } catch {
-      return {};
-    }
-  };
-  const user = getUser();
+  const { user: authUser, isAuthenticated, logout } = useAuth();
+  const user = isAuthenticated ? authUser : {};
   const links = user.role === 'admin' ? [...navItems, adminNavItem] : navItems;
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    navigate('/login');
-    setSidebarOpen(false);
-  };
+const handleLogout = () => {
+      logout();
+      // Land on the public dashboard rather than the sign-in form: every page
+      // is browsable signed out, so there is nothing left to unlock.
+      navigate('/dashboard');
+      setSidebarOpen(false);
+    };
 
   const handleNavClick = () => {
     if (isMobile) setSidebarOpen(false);
@@ -106,11 +103,17 @@ const Sidebar = ({ isOpen: controlledIsOpen, onClose }) => {
             <div className="avatar avatar-md">
               {user.username?.[0]?.toUpperCase() || '?'}
             </div>
-            <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-surface" />
+            <span
+              className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-surface ${
+                isAuthenticated ? 'bg-emerald-400' : 'bg-slate-500'
+              }`}
+            />
           </div>
           <div className="min-w-0">
             <p className="font-medium text-slate-100 truncate">{user.username || 'Guest'}</p>
-            <p className="text-slate-400 text-xs capitalize">{user.role || 'tester'}</p>
+            <p className="text-slate-400 text-xs capitalize">
+              {isAuthenticated ? user.role : 'not signed in'}
+            </p>
           </div>
         </div>
       </div>
@@ -160,15 +163,28 @@ const Sidebar = ({ isOpen: controlledIsOpen, onClose }) => {
         </ul>
       </nav>
 
-      {/* Logout */}
+      {/* Sign in / Logout */}
       <div className="p-3 border-t border-white/10">
-        <button
-          onClick={handleLogout}
-          className="group w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-200"
-        >
-          <LogOut className="w-[18px] h-[18px] shrink-0" strokeWidth={2} />
-          <span className="text-sm font-medium">Logout</span>
-        </button>
+        {isAuthenticated ? (
+          <button
+            onClick={handleLogout}
+            className="group w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-200"
+          >
+            <LogOut className="w-[18px] h-[18px] shrink-0" strokeWidth={2} />
+            <span className="text-sm font-medium">Logout</span>
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              navigate('/login', { state: { from: location } });
+              handleNavClick();
+            }}
+            className="group w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-slate-300 hover:text-white hover:bg-brand-indigo/15 transition-all duration-200"
+          >
+            <LogIn className="w-[18px] h-[18px] shrink-0" strokeWidth={2} />
+            <span className="text-sm font-medium">Sign in</span>
+          </button>
+        )}
       </div>
     </aside>
     </>

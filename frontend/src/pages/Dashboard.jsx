@@ -16,6 +16,8 @@ import {
 import axios from '../api/axiosConfig';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import AuthGateBanner from '../components/AuthGateBanner';
+import { useAuth } from '../contexts/useAuth';
 
 const StatCard = ({ icon: Icon, label, value, accent, delay, progress }) => (
   <motion.div
@@ -79,15 +81,13 @@ const Dashboard = () => {
   const [severityFilter, setSeverityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [filteredRuns, setFilteredRuns] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'));
 
   useEffect(() => {
-    if (!token) {
-      navigate('/login');
-      return;
-    }
-
     const fetchStats = async () => {
+      if (!token) {
+        return;
+      }
       try {
         const res = await axios.get('/projects/stats', {
           headers: { Authorization: `Bearer ${token}` }
@@ -116,10 +116,6 @@ const Dashboard = () => {
         });
       } catch (error) {
         console.error('Failed to load stats', error);
-        if (error.response?.status === 401) {
-          localStorage.clear();
-          navigate('/login');
-        }
       } finally {
         setLoading(false);
       }
@@ -149,6 +145,7 @@ const Dashboard = () => {
   }, [token, runTypeFilter, severityFilter, statusFilter]);
 
   const v = (n) => (loading ? '—' : n);
+  const { isAuthenticated } = useAuth();
 
   return (
     <div className="relative flex h-screen overflow-hidden">
@@ -156,6 +153,9 @@ const Dashboard = () => {
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 p-8 overflow-y-auto max-w-6xl lg:ml-64 mx-auto">
+        {!isAuthenticated && (
+          <AuthGateBanner message="You are browsing as a guest. Sign in to load your projects, runs and reports." />
+        )}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -173,10 +173,18 @@ const Dashboard = () => {
               </button>
               <div>
                 <h2 className="text-3xl font-display font-bold text-white">
-                  Welcome back, <span className="text-gradient">{user.username || 'tester'}</span>
+                  {user.username ? (
+                    <>Welcome back, <span className="text-gradient">{user.username}</span></>
+                  ) : (
+                    <>Welcome to <span className="text-gradient">QA Platform</span></>
+                  )}
                 </h2>
                 <p className="text-slate-400 mt-1">
-                  {loading ? 'Loading…' : `${stats.projects} projects · ${stats.testCases} test cases · ${stats.bugs} open bugs`}
+                  {!isAuthenticated
+                    ? 'Sign in to see your live project, run and bug numbers.'
+                    : loading
+                      ? 'Loading…'
+                      : `${stats.projects} projects · ${stats.testCases} test cases · ${stats.bugs} open bugs`}
                 </p>
               </div>
             </div>
