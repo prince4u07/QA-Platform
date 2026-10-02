@@ -1,0 +1,229 @@
+@startuml QA Platform - Data Flow Diagram
+' ============================================================
+' QA Platform DFD generated from backend/schema.sql + README
+' Level 0 (Context), Level 1 (Detailed), Level 2 (4.0 + 5.0)
+' Render with:  java -jar plantuml.jar dfd.puml
+' ============================================================
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName "Segoe UI"
+skinparam arrowColor #3d405b
+skinparam arrowThickness 1.3
+skinparam noteBackgroundColor #fff3b0
+skinparam noteBorderColor #b08900
+
+skinparam rectangle {
+  BackgroundColor #edf2f4
+  BorderColor #2b2d42
+  FontStyle bold
+}
+skinparam usecase {
+  BackgroundColor #d8f3dc
+  BorderColor #2d6a4f
+  FontStyle bold
+  ArrowColor #2d6a4f
+}
+skinparam database {
+  BackgroundColor #caf0f8
+  BorderColor #0077b6
+  FontStyle bold
+}
+
+' ===================================================================
+' LEVEL 0 - CONTEXT DIAGRAM
+' ===================================================================
+legend top left
+|= DFD Legend |
+| actor/entity : rectangle |
+| process : rounded circle |
+| data store : cylinder |
+endlegend
+
+rectangle "**QA Platform**\n(User, Projects, Test Cases,\nRuns, Quality Analysis,\nAI, Bugs, Reports)" as SYSTEM
+
+rectangle "**User / Tester**" as U
+rectangle "**Admin**" as A
+rectangle "**Google Gemini API**" as G
+rectangle "**Target Web App**\n(website under test)" as T
+
+U -u-> SYSTEM : credentials, projects, test cases,\nrun requests, bugs, report queries
+U -d-> SYSTEM : JWT token, results, evidence,\nreports
+A -r-> SYSTEM : admin credentials,\nuser management
+SYSTEM -r-> G : AI prompts\n(suggestions, analysis, chat)
+G -r-> SYSTEM : AI responses
+SYSTEM -r-> T : Playwright crawl requests
+T -r-> SYSTEM : pages, DOM, responses
+
+newpage Level 1 - Detailed DFD
+
+' ===================================================================
+' LEVEL 1 - DETAILED DFD
+' ===================================================================
+legend bottom left
+|= DFD Legend |
+| actor/entity : rectangle |
+| process : rounded circle |
+| data store : cylinder |
+endlegend
+
+' ---------- External entities ----------
+rectangle "**User / Tester**" as U
+rectangle "**Admin**" as A
+rectangle "**Google Gemini API**" as G
+rectangle "**Target Web App**\n(website under test)" as T
+
+' ---------- Processes ----------
+usecase "**1.0\nUser\nAuthentication**" as P1
+usecase "**2.0\nProject & Test Case\nManagement**" as P2
+usecase "**3.0\nOTP\nHandshake**" as P3
+usecase "**4.0\nTest\nRunner**" as P4
+usecase "**5.0\nQuality Analysis\nEngine**" as P5
+usecase "**6.0\nAI\nAssistant**" as P6
+usecase "**7.0\nBug\nTracker**" as P7
+usecase "**8.0\nReport\nGenerator**" as P8
+
+' ---------- Data stores ----------
+database "D1\nusers" as D1
+database "D2\nlogin_history" as D2
+database "D3\nprojects" as D3
+database "D4\ntest_cases" as D4
+database "D5\ntest_runs" as D5
+database "D6\ncrawled_pages" as D6
+database "D7\notp_sessions" as D7
+database "D8\nai_suggestions" as D8
+database "D9\nbugs" as D9
+database "D10\nstatic / uploads\n(screenshots, evidence)" as D10
+
+' ---------- 1.0 Authentication ----------
+U -r-> P1 : "register / login"
+P1 -r-> U : "JWT token, profile"
+P1 --> D1 : "account, role (admin if ADMIN_EMAIL)"
+P1 --> D2 : "login record"
+A -d-> P1 : "admin credentials"
+A --> D1 : "activate / deactivate users"
+
+' ---------- 2.0 Project & Test Case Management ----------
+U -r-> P2 : "project & test case CRUD"
+P2 --> D3 : "projects, saved browser sessions"
+P2 --> D4 : "test cases"
+D3 -l-> P2 : "project list, base_url"
+D4 -l-> P2 : "test case definitions"
+
+' ---------- 4.0 Test Runner ----------
+U -r-> P4 : "start manual / automated run"
+D4 -u-> P4 : "test case steps, crawl settings"
+D3 -u-> P4 : "base_url, saved session"
+P4 -r-> T : "crawl / execute steps"
+T -l-> P4 : "pages, DOM, responses"
+P4 -d-> D5 : "run status, results, error"
+P4 -d-> D6 : "per-page evidence"
+P4 -d-> D10 : "screenshots / files"
+
+' ---------- 3.0 OTP Handshake ----------
+P4 --> P3 : "OTP required (waiting)"
+P3 -r-> U : "request OTP code"
+U -l-> P3 : "submit OTP"
+P3 --> P4 : "otp submitted / cancelled"
+P3 --> D7 : "otp session state"
+
+' ---------- 5.0 Quality Analysis Engine ----------
+D5 -u-> P5 : "run findings (6 categories)"
+D6 -u-> P5 : "per-page findings"
+P5 --> D5 : "health_score, scores, regression,\nworst_severity, verdict"
+
+' ---------- 6.0 AI Assistant ----------
+U -r-> P6 : "chat / prompt"
+P6 --> G : "prompts (suggestions, bug,\nfix analysis)"
+G --> P6 : "AI responses"
+D4 -d-> P6 : "test case context"
+D9 -d-> P6 : "bug context"
+P6 --> D8 : "AI-proposed test cases"
+
+' ---------- 7.0 Bug Tracker ----------
+U -r-> P7 : "manual bug reports"
+D5 -l-> P7 : "automated findings"
+P7 --> D9 : "bugs, status, evidence"
+D9 -r-> P7 : "bug list"
+P6 -l-> P7 : "AI analysis of bug"
+
+' ---------- 8.0 Report Generator ----------
+U -r-> P8 : "report / trend / PDF request"
+D3 -d-> P8 : "projects"
+D4 -d-> P8 : "test cases"
+D5 -d-> P8 : "runs, pass rates, health"
+D9 -d-> P8 : "bug breakdown"
+P8 -l-> U : "summaries, trends, PDF"
+
+newpage Level 2 - Test Runner (Process 4.0)
+
+' ===================================================================
+' LEVEL 2 - PROCESS 4.0 TEST RUNNER
+' Sub-processes: 4.1 queue, 4.2 crawler, 4.3 OTP, 4.4 evidence,
+'                4.5 scoring, 4.6 session, 4.7 persistence
+' ===================================================================
+rectangle "**User / Tester**" as U2
+rectangle "**Target Web App**\n(website under test)" as T2
+usecase "**4.4\nJob / Run\nCoordinator**" as L2C
+usecase "**4.1\nLoad Test Case\n& Prepare Run**" as L2P
+usecase "**4.2\nPlaywright\nCrawler**" as L2CR
+usecase "**4.3\nOTP\nCoordinator**" as L2OTP
+usecase "**4.5\nEvidence\nCapture**" as L2E
+usecase "**4.6\nStep\nExecutor**" as L2S
+database "D3\nprojects" as L2D3
+database "D4\ntest_cases" as L2D4
+database "D7\notp_sessions" as L2D7
+database "D5\ntest_runs" as L2D5
+database "D6\ncrawled_pages" as L2D6
+database "D10\nstatic / uploads\n(screenshots, evidence)" as L2D10
+
+U2 -r-> L2C : "start run / poll job / cancel"
+L2C -d-> L2P : "test case id, settings"
+L2P -l-> L2D4 : "test case, steps, crawl_pages,\nmax_pages"
+L2P -l-> L2D3 : "base_url, saved session,\nlanding URL"
+L2P -r-> L2CR : "run config, crawl queue"
+L2CR -r-> T2 : "crawl / execute actions"
+T2 -l-> L2CR : "pages, DOM, API responses,\nconsole messages"
+L2CR -u-> L2S : "steps text -> step actions"
+L2S --> L2CR : "step result per step"
+L2CR -u-> L2OTP : "OTP required"
+L2OTP --> L2CR : "otp submitted / cancelled / timeout"
+L2OTP -r-> U2 : "prompt for OTP"
+U2 -l-> L2OTP : "submit OTP"
+L2OTP --> L2D7 : "waiting / submitted / completed"
+L2CR -r-> L2E : "screenshot, page findings"
+L2E --> L2CR : "evidence paths"
+L2E --> L2D10 : "screenshots, crops"
+L2CR -d-> L2D5 : "run status, findings JSON"
+L2CR -d-> L2D6 : "per-page records"
+L2D5 -l-> L2CR : "recorded run id"
+L2C -d-> U2 : "job status + run results"
+
+newpage Level 2 - Quality Analysis Engine (Process 5.0)
+
+' ===================================================================
+' LEVEL 2 - PROCESS 5.0 QUALITY ANALYSIS ENGINE
+' Sub-processes per the six check categories + scoring
+' ===================================================================
+rectangle "**Google Gemini API**" as G5
+usecase "**5.1\nPage Checks\n(functional, broken\nlinks, console, a11y,\nSEO, security,\nmobile, perf)**" as Q5
+usecase "**5.2\nCategory\nScoring**" as Q5S
+usecase "**5.3\nHealth Score &\nScore Breakdown**" as Q5H
+usecase "**5.4\nRegression\n(vs previous run)**" as Q5R
+usecase "**5.5\nVerdict &\nSeverity**" as Q5V
+database "D5\ntest_runs" as QD5
+database "D6\ncrawled_pages" as QD6
+database "D9\nbugs" as QD9
+
+QD5 -d-> Q5 : "run + page findings JSON"
+QD6 -d-> Q5 : "per-page findings"
+Q5 --> Q5S : "raw findings per category"
+Q5S --> Q5H : "candidate scores"
+QD5 -u-> Q5R : "previous run results"
+Q5 -> QD5 : "previous-run snapshot"
+Q5R --> Q5H : "new / fixed / score delta"
+Q5H --> Q5V : "health_score, subscores"
+Q5V --> QD5 : "worst_severity, verdict_reason"
+Q5V --> QD9 : "auto-generated bug candidates"
+
+@enduml

@@ -3,11 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { Bot, Send, AlertTriangle, MessageSquare, Loader2, Menu } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import AuthGateBanner from '../components/AuthGateBanner';
+import { useAuth } from '../contexts/useAuth';
+import { useRequireAuth } from '../hooks/useRequireAuth';
 import { chatWithAi, checkAiHealth } from '../api/ai';
 
 const AIAssistant = () => {
-  const navigate = useNavigate();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+    const navigate = useNavigate();
+    const { isAuthenticated } = useAuth();
+    const requireAuth = useRequireAuth();
+    const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
 
   const [messages, setMessages] = useState([
@@ -20,17 +25,16 @@ const AIAssistant = () => {
   const [sending, setSending] = useState(false);
   const [includeContext, setIncludeContext] = useState(false);
   const [aiAvailable, setAiAvailable] = useState(true);
-  const [aiCheckLoading, setAiCheckLoading] = useState(true);
+  const [aiCheckLoading, setAiCheckLoading] = useState(() => !!localStorage.getItem('token'));
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  useEffect(() => {
-    if (!localStorage.getItem('token')) {
-      navigate('/login');
-      return;
-    }
+    useEffect(() => {
+      if (!localStorage.getItem('token')) {
+        return;
+      }
 
     const checkHealth = async () => {
       try {
@@ -51,10 +55,11 @@ const AIAssistant = () => {
   }, [messages]);
 
   const handleSend = async (e) => {
-    if (e) e.preventDefault();
-    const trimmed = input.trim();
-    if (!trimmed || sending) return;
-
+      if (e) e.preventDefault();
+      const trimmed = input.trim();
+      if (!trimmed || sending) return;
+      if (!requireAuth()) return;
+  
     const newMessages = [...messages, { role: 'user', content: trimmed }];
     setMessages(newMessages);
     setInput('');
@@ -150,7 +155,7 @@ const AIAssistant = () => {
         remaining = remaining.slice(nextMatch.index + nextMatch[0].length);
       }
 
-      return (
+  return (
         <div key={idx} className={line.trim() === '' ? 'h-2' : ''}>
           {parts}
         </div>
@@ -164,6 +169,11 @@ return (
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 flex flex-col h-screen overflow-hidden lg:ml-64">
+        {!isAuthenticated && (
+          <div className="px-8 pt-4 max-w-7xl mx-auto w-full">
+            <AuthGateBanner message="The assistant uses your project context. Sign in to ask it about your runs." />
+          </div>
+        )}
         {/* Header */}
         <div className="glass-strong border-b border-white/10 px-8 py-4 flex justify-between items-center gap-4 max-w-7xl mx-auto w-full">
           <div className="flex items-center gap-4">

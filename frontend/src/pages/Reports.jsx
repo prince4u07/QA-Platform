@@ -16,6 +16,9 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import AuthGateBanner from '../components/AuthGateBanner';
+import { useAuth } from '../contexts/useAuth';
+import { useRequireAuth } from '../hooks/useRequireAuth';
 import axios from '../api/axiosConfig';
 import {
   getSummary,
@@ -56,8 +59,10 @@ const ChartCard = ({ title, Icon, note, hasData, children }) => (
 );
 
 const Reports = () => {
-  const navigate = useNavigate();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+    const navigate = useNavigate();
+    const { isAuthenticated } = useAuth();
+    const requireAuth = useRequireAuth();
+    const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Two different states, deliberately. `loading` is the very first load, when
   // there is genuinely nothing to show yet. `refreshing` is every load after
@@ -65,7 +70,7 @@ const Reports = () => {
   // Collapsing them into one is what made every refresh feel like a page
   // reload: the whole dashboard was unmounted and rebuilt to fetch the same
   // shape of data, so charts flashed and scroll position was lost.
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'));
   const [refreshing, setRefreshing] = useState(false);
   const [summary, setSummary] = useState(null);
   const [detectedIssues, setDetectedIssues] = useState([]);
@@ -81,11 +86,10 @@ const Reports = () => {
   const [reloadFlag, setReloadFlag] = useState(0);
   const reloadReports = () => setReloadFlag((f) => f + 1);
 
-  useEffect(() => {
-    if (!localStorage.getItem('token')) {
-      navigate('/login');
-      return;
-    }
+    useEffect(() => {
+      if (!localStorage.getItem('token')) {
+        return;
+      }
 
     const loadAllReports = async () => {
       // Only blank the screen when there is nothing on it yet.
@@ -126,10 +130,7 @@ const Reports = () => {
         setPassRate(list(value(5)));
         setRecentRuns(list(value(6)));
       } catch (error) {
-        if (error.response?.status === 401) {
-          localStorage.clear();
-          navigate('/login');
-        } else {
+        if (error.response?.status !== 401) {
           console.error('Failed to load reports', error);
         }
       } finally {
@@ -142,6 +143,7 @@ const Reports = () => {
   }, [navigate, reloadFlag, sourceFilter]);
 
   const handleExportPDF = async () => {
+    if (!requireAuth()) return;
     setExportingPdf(true);
     setPdfError('');
     try {
@@ -199,7 +201,7 @@ const Reports = () => {
   // Only the very first load gets the empty screen. Every refresh after that
   // keeps the dashboard mounted so charts, scroll position and focus survive.
   if (loading) {
-    return (
+  return (
       <div className="relative flex min-h-screen text-slate-200">
         <AmbientBackground />
         <Sidebar />
@@ -220,6 +222,9 @@ return (
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-7xl mx-auto">
+        {!isAuthenticated && (
+          <AuthGateBanner message="Reports are generated from your runs. Sign in to view and export them." />
+        )}
         {/* HEADER */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}

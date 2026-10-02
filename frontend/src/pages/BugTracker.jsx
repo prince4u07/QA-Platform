@@ -9,6 +9,9 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import AuthGateBanner from '../components/AuthGateBanner';
+import { useAuth } from '../contexts/useAuth';
+import { useRequireAuth } from '../hooks/useRequireAuth';
 import { getProjects } from '../api/projects';
 import {
   getBugs,
@@ -89,7 +92,7 @@ const BugTracker = () => {
 
   const [bugs, setBugs] = useState([]);
   const [projects, setProjects] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'));
   // Bumped to trigger a re-fetch of the bug list from outside the effect.
   const [reloadFlag, setReloadFlag] = useState(0);
 
@@ -149,11 +152,10 @@ const BugTracker = () => {
 
   const reloadBugs = () => setReloadFlag((f) => f + 1);
 
-  useEffect(() => {
-    if (!localStorage.getItem('token')) {
-      navigate('/login');
-      return;
-    }
+    useEffect(() => {
+      if (!localStorage.getItem('token')) {
+        return;
+      }
 
     const loadProjects = async () => {
       try {
@@ -161,11 +163,9 @@ const BugTracker = () => {
         // /projects is paginated -> { data: [...], pagination }. Support both shapes.
         const list = Array.isArray(res.data) ? res.data : (res.data?.data || []);
         setProjects(list);
-      } catch (error) {
-        if (error.response?.status === 401) {
-          localStorage.clear();
-          navigate('/login');
-        }
+      } catch {
+        // A 401 here means the visitor is browsing signed out, which is allowed.
+        // The axios interceptor handles a genuinely expired session.
       }
     };
 
@@ -173,6 +173,10 @@ const BugTracker = () => {
   }, [navigate]);
 
   useEffect(() => {
+    if (!localStorage.getItem('token')) {
+      return;
+    }
+
     const loadBugs = async () => {
       try {
         setLoading(true);
@@ -183,11 +187,9 @@ const BugTracker = () => {
           project_id: filterProject,
         });
         setBugs(res.data);
-      } catch (error) {
-        if (error.response?.status === 401) {
-          localStorage.clear();
-          navigate('/login');
-        }
+      } catch {
+        // A 401 here means the visitor is browsing signed out, which is allowed.
+        // The axios interceptor handles a genuinely expired session.
       } finally {
         setLoading(false);
       }
@@ -225,6 +227,8 @@ const BugTracker = () => {
   };
 
   const openCreateModal = () => {
+    if (!requireAuth()) return;
+
     resetForm();
     setShowModal(true);
   };
@@ -385,12 +389,18 @@ const BugTracker = () => {
   const inputBase =
     'w-full rounded-xl bg-white/5 border px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 transition';
 
+  const { isAuthenticated } = useAuth();
+  const requireAuth = useRequireAuth();
+
   return (
     <div className="relative flex h-screen overflow-hidden text-slate-200">
       <AmbientBackground />
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-7xl mx-auto">
+        {!isAuthenticated && (
+          <AuthGateBanner message="Bugs are stored per account. Sign in to file, triage and close them." />
+        )}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -575,7 +585,8 @@ const BugTracker = () => {
 
       {/* CREATE / EDIT MODAL */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -675,7 +686,8 @@ const BugTracker = () => {
         const showEvidencePanel = bugHasMeaningfulEvidence(detailBug);
 
         return (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
             <motion.div
               initial={{ opacity: 0, scale: 0.97, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
