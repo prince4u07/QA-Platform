@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Mail, Lock, Eye, EyeOff, LogIn, AlertCircle, Loader2, ShieldCheck } from 'lucide-react';
 import axios from '../api/axiosConfig';
 import AuthBackground from '../components/AuthBackground';
+import { useAuth } from '../contexts/useAuth';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -16,6 +17,8 @@ const Login = () => {
     general: ''
   });
   const navigate = useNavigate();
+  const location = useLocation();
+  const { login } = useAuth();
 
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   const isValid = isEmailValid && password.length > 0;
@@ -30,11 +33,18 @@ const Login = () => {
         email,
         password
       });
-      localStorage.setItem('token', response.data.access_token);
-      localStorage.setItem('user', JSON.stringify(response.data.user));
-      const next = sessionStorage.getItem('redirectAfterLogin');
+      // Record the session through the context, not just localStorage, so the
+      // rest of the app sees an authenticated user immediately. Writing to
+      // localStorage alone left AuthProvider stale, which made the sidebar and
+      // the feature gates still treat a just-signed-in user as a guest.
+      login(response.data.access_token, response.data.user);
+      // Two ways back to the intended page: router state (a link we followed)
+      // and sessionStorage (a 401 bounce from the axios interceptor).
+      const fromState = location.state?.from?.pathname;
+      const fromSession = sessionStorage.getItem('redirectAfterLogin');
       sessionStorage.removeItem('redirectAfterLogin');
-      navigate(next ? next : '/dashboard');
+      const next = fromState || fromSession;
+      navigate(next ? next : '/dashboard', { replace: true });
     } catch (err) {
       const data = err.response?.data || {};
       const field = data.field;
@@ -72,9 +82,9 @@ const Login = () => {
             <ShieldCheck className="w-6 h-6 text-white" strokeWidth={2.2} />
           </div>
           <h1 className="text-2xl font-display font-bold text-white">
-            Welcome back to <span className="text-gradient">QA Platform</span>
+            Sign in to <span className="text-gradient">QA Platform</span>
           </h1>
-          <p className="text-slate-400 text-sm mt-1.5">Sign in to continue testing</p>
+          <p className="text-slate-400 text-sm mt-1.5">Access your QA workspace securely</p>
         </div>
 
         {errors.general && (
@@ -160,9 +170,13 @@ const Login = () => {
               </p>
             )}
             <div className="text-right mt-2">
-              <Link to="/forgot-password" className="text-sm text-slate-400 hover:text-brand-sky transition">
+              <button
+                type="button"
+                className="text-sm text-slate-400 hover:text-brand-sky transition"
+                onClick={() => setErrors((e) => ({ ...e, general: 'Password reset is not available yet. Contact your administrator.' }))}
+              >
                 Forgot password?
-              </Link>
+              </button>
             </div>
           </div>
 

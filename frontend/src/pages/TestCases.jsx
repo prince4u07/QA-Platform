@@ -11,6 +11,9 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import AuthGateBanner from '../components/AuthGateBanner';
+import { useAuth } from '../contexts/useAuth';
+import { useRequireAuth } from '../hooks/useRequireAuth';
 import { getProjects } from '../api/projects';
 import {
   getTestCases,
@@ -399,13 +402,15 @@ const PageRow = ({ page, isExpanded, onToggle }) => {
 };
 
 const TestCases = () => {
-  const navigate = useNavigate();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+    const navigate = useNavigate();
+    const { isAuthenticated } = useAuth();
+    const requireAuth = useRequireAuth();
+    const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [projects, setProjects] = useState([]);
   const [testCases, setTestCases] = useState([]);
   const [selectedProject, setSelectedProject] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'));
 
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -464,11 +469,10 @@ const TestCases = () => {
   const [reloadFlag, setReloadFlag] = useState(0);
   const reloadTestCases = () => setReloadFlag((f) => f + 1);
 
-  useEffect(() => {
-    if (!localStorage.getItem('token')) {
-      navigate('/login');
-      return;
-    }
+    useEffect(() => {
+      if (!localStorage.getItem('token')) {
+        return;
+      }
 
     const loadProjects = async () => {
       try {
@@ -477,10 +481,7 @@ const TestCases = () => {
         const list = Array.isArray(res.data) ? res.data : (res.data?.data || []);
         setProjects(list);
       } catch (err) {
-        if (err.response?.status === 401) {
-          localStorage.clear();
-          navigate('/login');
-        } else {
+        if (err.response?.status !== 401) {
           setProjects([]);
         }
       }
@@ -570,6 +571,8 @@ const TestCases = () => {
   };
 
   const openCreateModal = () => {
+      if (!requireAuth()) return;
+
     setEditingId(null);
     resetForm();
     setShowModal(true);
@@ -994,6 +997,9 @@ const TestCases = () => {
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-7xl mx-auto">
+        {!isAuthenticated && (
+          <AuthGateBanner message="Test cases are stored per account. Sign in to write, run and track them." />
+        )}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1016,8 +1022,8 @@ const TestCases = () => {
           <motion.button
             whileHover={{ scale: 1.03 }}
             whileTap={{ scale: 0.97 }}
-            onClick={openCreateModal}
-            disabled={projects.length === 0}
+              onClick={openCreateModal}
+              disabled={isAuthenticated && projects.length === 0}
             className={
               'flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium transition-all ' +
               (projects.length === 0
@@ -1050,7 +1056,7 @@ const TestCases = () => {
           </div>
         </div>
 
-        {projects.length === 0 && (
+          {isAuthenticated && projects.length === 0 && (
           <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-3 rounded-xl mb-6 text-sm flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 flex-shrink-0" />
             You need at least one project before creating test cases.{' '}
@@ -1289,7 +1295,8 @@ const TestCases = () => {
 
       {/* CREATE/EDIT MODAL */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -1531,7 +1538,8 @@ const TestCases = () => {
 
       {/* RESULTS MODAL */}
       {showResultModal && runResult && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -1777,7 +1785,8 @@ const TestCases = () => {
 
       {/* MANUAL RUN MODAL */}
       {manualRunFor && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -2111,7 +2120,8 @@ const TestCases = () => {
 
       {/* HISTORY MODAL */}
       {historyTestCase && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div
             initial={{ opacity: 0, scale: 0.97, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
