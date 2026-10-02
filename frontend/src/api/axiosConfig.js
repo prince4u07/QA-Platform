@@ -16,11 +16,13 @@ export const imgUrl = (path) => {
 
 // Single shared auth header builder (replaces 6+ copies across api/ modules).
 // Prefer the request interceptor below; this is kept for explicit calls.
-export const getAuthHeader = () => ({
-  headers: {
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  },
-});
+// Sends no header at all when signed out. Sending "Bearer null" made Flask
+// reject the request as 422 malformed instead of the 401 unauthorized that
+// actually describes the situation.
+export const getAuthHeader = () => {
+  const token = localStorage.getItem('token');
+  return token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+};
 
 // Attach the token to every request automatically so callers don't have to.
 axios.interceptors.request.use((config) => {
@@ -38,7 +40,12 @@ axios.interceptors.request.use((config) => {
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    // Only bounce the visitor if they actually had a session that just became
+    // invalid. A guest browsing the public pages also gets 401s from the
+    // protected endpoints, and redirecting those would undo public browsing.
+    const hadSession = !!localStorage.getItem('token');
+
+    if (hadSession && error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
 

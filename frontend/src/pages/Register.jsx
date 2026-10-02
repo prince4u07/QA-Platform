@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { User, Mail, Lock, Eye, EyeOff, UserPlus, Check, AlertCircle, Loader2, Sparkles } from 'lucide-react';
@@ -111,7 +111,7 @@ const Register = () => {
         email,
         password
       });
-      navigate('/login');
+      navigate('/login', { replace: true });
     } catch (_) {
       setSubmitError(_.response?.data?.error || 'Something went wrong. Please try again.');
     } finally {
@@ -147,12 +147,9 @@ const Register = () => {
           <div className="grid place-items-center w-12 h-12 rounded-xl bg-brand-gradient shadow-glow mb-4">
             <Sparkles className="w-6 h-6 text-white" strokeWidth={2.2} />
           </div>
-          <h1 className="text-2xl font-display font-bold text-white">
-            Create your <span className="text-gradient">account</span>
-          </h1>
-          <p className="text-slate-400 text-sm mt-1.5">Start testing websites in minutes</p>
+          <h1 className="text-2xl font-display font-bold text-white tracking-tight mb-1">Create your account</h1>
+          <p className="text-slate-400 text-sm mt-1.5">Create your account to start testing reliably</p>
         </div>
-
         {submitError && (
           <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 rounded-xl mb-5 text-sm">
             <AlertCircle className="w-4 h-4 shrink-0" />

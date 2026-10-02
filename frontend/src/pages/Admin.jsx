@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import Sidebar from '../components/Sidebar';
 import AmbientBackground from '../components/AmbientBackground';
+import AuthGateBanner from '../components/AuthGateBanner';
+import { useAuth } from '../contexts/useAuth';
 import {
   isAdmin, getOverview, getUsers, getUserDetail, updateUser, deleteUser,
 } from '../api/admin';
@@ -25,9 +27,10 @@ const Stat = ({ value, label, Icon }) => (
 
 const Admin = () => {
   const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !!localStorage.getItem('token'));
   const [refreshing, setRefreshing] = useState(false);
   const [overview, setOverview] = useState(null);
   const [users, setUsers] = useState([]);
@@ -41,17 +44,16 @@ const Admin = () => {
   const [deleting, setDeleting] = useState(null);
   const [confirmName, setConfirmName] = useState('');
 
-  useEffect(() => {
-    if (!localStorage.getItem('token')) {
-      navigate('/login');
-      return;
-    }
-    // Not the security boundary, just avoids showing a page that would only
-    // return 403. The server checks the role on every request regardless.
-    if (!isAdmin()) {
-      navigate('/dashboard');
-      return;
-    }
+    useEffect(() => {
+      if (!localStorage.getItem('token')) {
+        return;
+      }
+      // Not the security boundary, just avoids showing a page that would only
+      // return 403. The server checks the role on every request regardless.
+      if (!isAdmin()) {
+        navigate('/dashboard');
+        return;
+      }
 
     const load = async () => {
       setRefreshing(true);
@@ -61,10 +63,7 @@ const Admin = () => {
         setUsers(Array.isArray(u.data) ? u.data : []);
         setError('');
       } catch (err) {
-        if (err.response?.status === 401) {
-          localStorage.clear();
-          navigate('/login');
-        } else if (err.response?.status === 403) {
+        if (err.response?.status === 403) {
           navigate('/dashboard');
         } else {
           setError('Could not load the admin data.');
@@ -131,6 +130,21 @@ const Admin = () => {
           <div className="flex items-center gap-2 text-slate-400">
             <Loader2 className="w-5 h-5 animate-spin" /> Loading admin data...
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Browsing is public, but this console lists every account in the system, so
+  // a signed-out visitor gets a plain explanation instead of an empty table.
+  if (!isAuthenticated) {
+    return (
+      <div className="relative flex min-h-screen text-slate-200">
+        <AmbientBackground />
+        <Sidebar />
+        <div className="flex-1 p-8 overflow-y-auto lg:ml-64 max-w-3xl mx-auto">
+          <h2 className="text-2xl font-display font-bold text-white mb-4">Admin console</h2>
+          <AuthGateBanner message="This console manages every account on the platform. Sign in with an administrator account to continue." />
         </div>
       </div>
     );
@@ -302,7 +316,8 @@ const Admin = () => {
 
       {/* One account's detail */}
       {detail && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50"
           onClick={() => setDetail(null)}>
           <div className="glass-strong rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6"
             onClick={(e) => e.stopPropagation()}>
@@ -339,7 +354,8 @@ const Admin = () => {
 
       {/* Deletion, typed confirmation */}
       {deleting && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div role="dialog" aria-modal="true"
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="glass-strong rounded-2xl w-full max-w-md p-6">
             <h2 className="text-lg font-display font-bold text-white flex items-center gap-2 mb-2">
               <AlertTriangle className="w-5 h-5 text-red-400" /> Delete {deleting.username}?

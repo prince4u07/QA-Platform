@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TestCases from './TestCases';
+import AuthProvider from '../contexts/AuthProvider';
 import * as projectsApi from '../api/projects';
 import * as testcasesApi from '../api/testcases';
 
@@ -44,11 +45,16 @@ function renderPage(testCases = [manualTest]) {
   });
   testcasesApi.getTestCases.mockResolvedValue({ data: testCases });
   testcasesApi.createTestCase.mockResolvedValue({ data: { id: 5 } });
+  // A signed-in session: the app treats a visitor as authenticated only when
+  // both the token and the user record are present.
   localStorage.setItem('token', 'test-token');
+  localStorage.setItem('user', JSON.stringify({ id: 1, username: 'prince', role: 'tester' }));
 
   return render(
     <MemoryRouter>
-      <TestCases />
+      <AuthProvider>
+        <TestCases />
+      </AuthProvider>
     </MemoryRouter>
   );
 }
