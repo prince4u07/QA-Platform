@@ -13,6 +13,7 @@ from modules.runner.routes import (
     merge_findings,
     tag_findings_with_page,
     filter_console_errors,
+    build_flaky_summary,
 )
 
 
@@ -205,6 +206,16 @@ def test_performance_issues_count_towards_the_score():
     clean = calculate_health_score({})
     slow = calculate_health_score({'performance_issues': [{'severity': 'serious'}]})
     assert slow < clean
+
+
+def test_flaky_summary_requires_repeated_inconsistent_outcomes():
+    stable = build_flaky_summary(['Pass', 'Pass', 'Pass', 'Pass'])
+    assert stable['is_flaky'] is False
+
+    flaky = build_flaky_summary(['Pass', 'Fail', 'Pass', 'Fail'])
+    assert flaky['is_flaky'] is True
+    assert flaky['pass_rate'] == 50
+    assert flaky['sample_size'] == 4
 
 
 class _FakePage:

@@ -320,6 +320,14 @@ CREATE TABLE IF NOT EXISTS bugs (
     expected_behavior  TEXT,
     actual_behavior    TEXT,
     evidence           LONGTEXT,
+    severity_score     INT DEFAULT 0,
+    confidence         DECIMAL(5, 4) DEFAULT 0,
+    fingerprint        VARCHAR(64),
+    occurrences        INT DEFAULT 1,
+    first_seen_run_id  INT,
+    last_seen_run_id   INT,
+    root_cause         TEXT,
+    suggested_fix      TEXT,
     assigned_to        INT,
     created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     resolved_at        TIMESTAMP NULL,
@@ -328,5 +336,6 @@ CREATE TABLE IF NOT EXISTS bugs (
     FOREIGN KEY (assigned_to)  REFERENCES users(id)      ON DELETE SET NULL,
     INDEX idx_bugs_test_case (test_case_id),
     INDEX idx_bugs_assigned (assigned_to),
-    INDEX idx_bugs_status (status)
+    INDEX idx_bugs_status (status),
+    INDEX idx_bugs_fingerprint (fingerprint)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -215,6 +215,12 @@ const Reports = () => {
   }
 
   const hasNoData = summary && summary.total_runs === 0 && summary.total_bugs === 0;
+  const regressionTotals = recentRuns.reduce((totals, run) => {
+    const regression = run.regression || {};
+    totals.newIssues += Number(regression.new_count || 0);
+    totals.fixedIssues += Number(regression.fixed_count || 0);
+    return totals;
+  }, { newIssues: 0, fixedIssues: 0 });
 
 return (
     <div className="relative flex h-screen overflow-hidden text-slate-200">
@@ -309,6 +315,8 @@ return (
                 <Kpi value={summary.resolved_bugs} label="Resolved" Icon={CheckCircle2} tone="text-brand-teal" />
                 <Kpi value={summary.resolution_rate} suffix="%" label="Resolution Rate" Icon={TrendingUp} tone="text-amber-400" />
                 <Kpi value={summary.avg_resolution_days || '—'} suffix={summary.avg_resolution_days > 0 ? 'd' : ''} label="Avg Resolution" Icon={Clock} tone="text-white" />
+                <Kpi value={regressionTotals.newIssues} label="New Regressions" Icon={XCircle} tone="text-red-300" />
+                <Kpi value={regressionTotals.fixedIssues} label="Fixed Issues" Icon={CheckCircle} tone="text-brand-teal" />
               </div>
             )}
 
@@ -469,6 +477,29 @@ return (
                           <div className="text-sm font-medium text-slate-200">{run.issues_found}</div>
                           <div className="text-xs text-slate-500">Issues</div>
                         </div>
+                        {run.regression && run.regression.verdict && (
+                          <div className="text-right hidden md:block">
+                            <div className={
+                              'text-sm font-medium ' +
+                              (run.regression.verdict === 'improved'
+                                ? 'text-brand-teal'
+                                : run.regression.verdict === 'regressed'
+                                ? 'text-red-300'
+                                : 'text-slate-200')
+                            }>
+                              {run.regression.new_count || 0} new / {run.regression.fixed_count || 0} fixed
+                            </div>
+                            <div className="text-xs text-slate-500">Regression</div>
+                          </div>
+                        )}
+                        {run.regression?.flaky?.is_flaky && (
+                          <div className="text-right hidden lg:block">
+                            <div className="text-sm font-medium text-amber-300">Flaky</div>
+                            <div className="text-xs text-slate-500">
+                              {run.regression.flaky.pass_rate}% pass rate
+                            </div>
+                          </div>
+                        )}
                         <div className="text-right">
                           <div className="text-sm font-medium text-slate-200">{(run.duration_ms / 1000).toFixed(1)}s</div>
                           <div className="text-xs text-slate-500">Time</div>
