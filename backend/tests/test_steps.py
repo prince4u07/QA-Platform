@@ -339,6 +339,27 @@ def test_parses_a_wait_step_with_its_cap_in_mind():
     assert parse_step('sleep 3')['action'] == 'wait_seconds'
 
 
+def test_structured_assertions_are_parsed():
+    visible = parse_step('Expect element Submit to be visible')
+    assert visible['action'] == 'expect_visible'
+    assert visible['target'] == 'Submit'
+
+    count = parse_step('Expect 3 elements matching .card')
+    assert count['action'] == 'expect_count'
+    assert count['target'] == '.card'
+    assert count['value'] == '3'
+
+    attribute = parse_step('Expect Submit attribute disabled to equal false')
+    assert attribute['action'] == 'expect_attribute'
+    assert attribute['target'] == 'Submit'
+    assert attribute['attribute'] == 'disabled'
+    assert attribute['value'] == 'false'
+
+    storage = parse_step('Expect local storage token to exist')
+    assert storage['action'] == 'expect_storage_exists'
+    assert storage['target'] == 'token'
+
+
 def test_a_dropdown_selection_uses_the_label_fallback():
     page = _ScriptedPage()
     results, _ = run_steps(page, 'Select Extra Large in Size')
@@ -449,4 +470,3 @@ def test_wait_for_element_blocks_until_visible_then_passes():
 
     assert results[0]['status'] == 'passed'
     assert 'Save button' in results[0]['message']
-
