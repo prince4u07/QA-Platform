@@ -201,6 +201,38 @@ The email in `ADMIN_EMAIL` is matched when an account registers. The backend doe
 
 The base URL for local development is `http://127.0.0.1:5000/api`.
 
+### Automation issue intelligence
+
+Automated findings are converted into readable issue records with reproduction
+steps, expected versus actual behavior, evidence, impact score, confidence,
+stable fingerprints, occurrence counts, root-cause hints, and suggested fixes.
+Repeated findings are grouped instead of creating duplicate bugs, and recent
+reports show new versus fixed issues between runs.
+
+Automated workflows support executable assertions, not only clicks:
+
+```text
+Expect text Welcome
+Expect element Submit to be visible
+Expect 1 elements matching .result
+Expect Submit attribute disabled to equal false
+Expect local storage token to exist
+Expect url contains /dashboard
+```
+
+Recent runs also record inconsistent Pass/Fail outcomes as a possible flaky
+test when at least four comparable runs alternate between outcomes. Manual
+runs keep step-level notes, screenshots, expected-result decisions, and
+tester-reported issues so human observations and machine evidence stay linked.
+
+After pulling a version that adds issue intelligence fields to an existing
+database, run the additive migration:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe migrate_db.py
+```
+
 Authenticated requests send the JWT in the `Authorization` header:
 
 ```http

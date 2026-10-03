@@ -23,6 +23,7 @@ import {
 } from '../api/bugs';
 import { analyzeBug } from '../api/ai';
 import { imgUrl } from '../api/axiosConfig';
+import { rerunIssueTest } from '../api/runner';
 
 const CATEGORY_ICON = {
   'broken-link': Link2, 'console-error': Bug, 'missing-alt': ImageOff,
@@ -120,6 +121,7 @@ const BugTracker = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState(null);
   const [analyzingAI, setAnalyzingAI] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
 
   const [enlargedEvidence, setEnlargedEvidence] = useState(null);
 
@@ -324,6 +326,19 @@ const BugTracker = () => {
       });
     } finally {
       setAnalyzingAI(false);
+    }
+  };
+
+  const handleRerun = async () => {
+    if (!detailBug?.test_case_id || rerunning) return;
+    setRerunning(true);
+    try {
+      await rerunIssueTest(detailBug.test_case_id);
+      alert('A new automated run has been queued. Check Recent Test Runs for the result.');
+    } catch (err) {
+      alert(err.response?.data?.error || 'Could not queue a new run');
+    } finally {
+      setRerunning(false);
     }
   };
 
@@ -698,6 +713,21 @@ const BugTracker = () => {
                 <div className="flex-1">
                   <div className="flex flex-wrap items-center gap-2 mb-2">
                     <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + severityColor(detailBug.severity)}>{detailBug.severity}</span>
+                    {detailBug.severity_score > 0 && (
+                      <span className="text-xs text-slate-300 bg-white/5 px-2 py-1 rounded-md">
+                        Impact {detailBug.severity_score}/10
+                      </span>
+                    )}
+                    {detailBug.confidence > 0 && (
+                      <span className="text-xs text-slate-300 bg-white/5 px-2 py-1 rounded-md">
+                        Confidence {Math.round(Number(detailBug.confidence) * 100)}%
+                      </span>
+                    )}
+                    {detailBug.occurrences > 1 && (
+                      <span className="text-xs text-slate-300 bg-white/5 px-2 py-1 rounded-md">
+                        Seen {detailBug.occurrences} times
+                      </span>
+                    )}
                     <span className={'text-xs font-semibold px-2 py-1 rounded-md ' + statusColor(detailBug.status)}>{detailBug.status}</span>
                     <span className="text-xs text-slate-500">{categoryLabel(detailBug.category)}</span>
                     {detailBug.test_run_id && (
@@ -862,6 +892,18 @@ const BugTracker = () => {
                     <p className="text-sm text-slate-200 bg-red-500/10 border border-red-500/20 p-3 rounded-lg">{detailBug.actual_behavior}</p>
                   </div>
                 )}
+                {detailBug.root_cause && (
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 mb-1">LIKELY ROOT CAUSE</p>
+                    <p className="text-sm text-slate-200 bg-brand-indigo/10 border border-brand-indigo/20 p-3 rounded-lg">{detailBug.root_cause}</p>
+                  </div>
+                )}
+                {detailBug.suggested_fix && (
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 mb-1">SUGGESTED FIX</p>
+                    <p className="text-sm text-slate-200 bg-brand-teal/10 border border-brand-teal/20 p-3 rounded-lg">{detailBug.suggested_fix}</p>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3 text-xs text-slate-500 pt-4 border-t border-white/10">
                   <div><p className="font-semibold text-slate-400">Project</p><p>{detailBug.project_name || '—'}</p></div>
@@ -873,6 +915,16 @@ const BugTracker = () => {
                 </div>
 
                 <div className="flex flex-wrap gap-2 pt-4 border-t border-white/10">
+                  {detailBug.test_run_id && detailBug.test_case_id && (
+                    <button
+                      onClick={handleRerun}
+                      disabled={rerunning}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-brand-sky/15 text-brand-sky hover:bg-brand-sky/25 disabled:opacity-50 text-sm"
+                    >
+                      <RotateCcw className={'w-4 h-4 ' + (rerunning ? 'animate-spin' : '')} />
+                      {rerunning ? 'Queueing run...' : 'Run this test again'}
+                    </button>
+                  )}
                   {nextStatus(detailBug.status) && (
                     <button onClick={() => handleStatusChange(detailBug.id, nextStatus(detailBug.status))}
                       className="bg-brand-gradient text-white px-4 py-2 rounded-xl text-sm font-medium shadow-glow">

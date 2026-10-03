@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AuthContext, readStoredUser } from "./authStore";
 
 export const AuthProvider = ({ children }) => {
@@ -6,6 +6,26 @@ export const AuthProvider = ({ children }) => {
   // so the app never has to render a "checking session" flash.
   const [user, setUser] = useState(readStoredUser);
   const [token, setToken] = useState(() => localStorage.getItem("token") || null);
+
+  useEffect(() => {
+    const syncStoredSession = () => {
+      setToken(localStorage.getItem("token") || null);
+      setUser(readStoredUser());
+    };
+
+    const handleSessionExpired = () => {
+      setToken(null);
+      setUser(null);
+    };
+
+    window.addEventListener("storage", syncStoredSession);
+    window.addEventListener("qa:session-expired", handleSessionExpired);
+
+    return () => {
+      window.removeEventListener("storage", syncStoredSession);
+      window.removeEventListener("qa:session-expired", handleSessionExpired);
+    };
+  }, []);
 
   const login = (accessToken, userData) => {
     localStorage.setItem("token", accessToken);

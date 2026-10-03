@@ -26,6 +26,17 @@ def init_reports(app_mysql):
     mysql = app_mysql
 
 
+def _safe_json(value):
+    if not value:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _latest_detected_findings(user_id, source_filter=None):
     """Return the findings from each user's latest run per test case.
 
@@ -511,6 +522,7 @@ def recent_runs():
             cursor.execute(
                 """SELECT tr.id, tr.status, tr.health_score, tr.issues_found,
                           tr.duration_ms, tr.run_at, tr.run_type, tr.worst_severity,
+                          tr.regression, tr.coverage,
                           tc.title AS test_case_title,
                           p.name AS project_name
                    FROM test_runs tr
@@ -546,6 +558,8 @@ def recent_runs():
                 'run_at': run['run_at'].isoformat() if run['run_at'] else '',
                 'run_type': run.get('run_type', 'AUTOMATED'),
                 'worst_severity': run.get('worst_severity'),
+                'regression': _safe_json(run.get('regression')),
+                'coverage': _safe_json(run.get('coverage')),
                 'test_case_title': run['test_case_title'],
                 'project_name': run['project_name'],
             })

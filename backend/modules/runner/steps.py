@@ -85,6 +85,16 @@ _PATTERNS = [
         r'^expect\s+(?:the\s+)?text\s+(?P<value>.+?)\s+to\s+be\s+gone$', re.I)),
     ('expect_no_text', re.compile(
         r'^expect\s+(?P<value>.+?)\s+to\s+be\s+gone$', re.I)),
+    ('expect_visible', re.compile(
+        r'^(?:expect|verify|check)\s+(?:the\s+)?element\s+(?P<target>.+?)\s+to\s+be\s+(?:visible|shown)$', re.I)),
+    ('expect_count', re.compile(
+        r'^(?:expect|verify|check)\s+(?:there\s+to\s+be\s+)?(?P<value>\d+)\s+(?:elements?|matches?)\s+(?:for|matching)\s+(?P<target>.+)$', re.I)),
+    ('expect_attribute', re.compile(
+        r'^(?:expect|verify|check)\s+(?:the\s+)?(?P<target>.+?)\s+attribute\s+(?P<attribute>[\w:-]+)\s+to\s+(?:be|equal)\s+(?P<value>.+)$', re.I)),
+    ('expect_storage', re.compile(
+        r'^(?:expect|verify|check)\s+(?:local\s+storage|localstorage)\s+(?P<target>[\w.-]+)\s+(?:to\s+)?(?:be|equal)\s+(?P<value>.+)$', re.I)),
+    ('expect_storage_exists', re.compile(
+        r'^(?:expect|verify|check)\s+(?:local\s+storage|localstorage)\s+(?P<target>[\w.-]+)\s+to\s+exist$', re.I)),
     ('expect_no_text', re.compile(
         r'^expect\s+no\s+(?P<value>.+)$', re.I)),
     ('expect_text', re.compile(
@@ -176,9 +186,10 @@ def parse_step(line):
             'action': action,
             'target': _clean(groups.get('target')),
             'value': _clean(groups.get('value')),
+            'attribute': _clean(groups.get('attribute')),
         }
 
-    return {'raw': raw, 'action': 'unknown', 'target': '', 'value': ''}
+    return {'raw': raw, 'action': 'unknown', 'target': '', 'value': '', 'attribute': ''}
 
 
 def parse_steps(steps_text):
@@ -269,7 +280,9 @@ def execute_step(page, step, base_url=None):
             'message': 'Could not understand this step',
             'detail': 'Try wording like "Click Sign in", "Type alice@x.com into Email", '
                       '"Select Large in Size", "Tick the Terms checkbox", '
-                      '"Expect text Welcome", "Expect no Error" or "Open https://example.com".',
+                          '"Expect text Welcome", "Expect element Submit to be visible", '
+                          '"Expect local storage token to exist", "Expect no Error" or '
+                          '"Open https://example.com".',
         }
 
     try:
@@ -349,6 +362,71 @@ def execute_step(page, step, base_url=None):
                 'message': f'Expected "{value}" to be gone but it is still on the page',
                 'detail': f'Current URL: {page.url}',
             }
+
+        if action == 'expect_visible':
+            locator, how = _resolve(page, target)
+            if locator is None:
+                return {
+                    'status': 'failed',
+                    'message': f'Expected "{target}" to be visible',
+                    'detail': f'{how}. Current URL: {page.url}',
+                }
+            try:
+                locator.wait_for(state='visible', timeout=STEP_TIMEOUT_MS)
+                return {'status': 'passed', 'message': f'"{target}" is visible',
+                        'detail': f'found by {how}'}
+            except Exception:
+                return {'status': 'failed', 'message': f'Expected "{target}" to be visible',
+                        'detail': f'Element was not visible. Current URL: {page.url}'}
+
+        if action == 'expect_count':
+            locator = None
+            how = 'no element matched'
+            for candidate_how, candidate in _candidate_locators(page, target):
+                if candidate.count() > 0:
+                    locator = candidate
+                    how = candidate_how
+                    break
+            actual = locator.count() if locator is not None else 0
+            wanted = int(value)
+            if actual == wanted:
+                return {'status': 'passed', 'message': f'Found {actual} matches for "{target}"',
+                        'detail': f'found by {how}'}
+            return {'status': 'failed',
+                    'message': f'Expected {wanted} matches for "{target}", found {actual}',
+                    'detail': f'Current URL: {page.url}'}
+
+        if action == 'expect_attribute':
+            locator, how = _resolve(page, target)
+            if locator is None:
+                return {'status': 'failed',
+                        'message': f'Could not find "{target}" to check {step["attribute"]}',
+                        'detail': f'{how}. Current URL: {page.url}'}
+            actual = locator.get_attribute(step['attribute'])
+            if actual == value:
+                return {'status': 'passed',
+                        'message': f'{step["attribute"]} on "{target}" is "{value}"',
+                        'detail': f'found by {how}'}
+            return {'status': 'failed',
+                    'message': f'Expected {step["attribute"]} on "{target}" to be "{value}"',
+                    'detail': f'It was "{actual}". Current URL: {page.url}'}
+
+        if action in ('expect_storage', 'expect_storage_exists'):
+            actual = page.evaluate(
+                '(key) => window.localStorage.getItem(key)', target)
+            if action == 'expect_storage_exists':
+                passed = actual is not None
+                wanted_message = 'to exist'
+            else:
+                passed = actual == value
+                wanted_message = f'to equal "{value}"'
+            if passed:
+                return {'status': 'passed',
+                        'message': f'Local storage "{target}" {wanted_message}',
+                        'detail': ''}
+            return {'status': 'failed',
+                    'message': f'Expected local storage "{target}" {wanted_message}',
+                    'detail': f'It was "{actual}". Current URL: {page.url}'}
 
         if action == 'select_option':
             locator, how = _resolve(page, target, for_input=True)

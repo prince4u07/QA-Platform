@@ -18,6 +18,10 @@ export const cancelRunJob = (jobId) =>
 export const retryTestCase = (testCaseId) =>
   axios.post(`${API_URL}/run/${testCaseId}/retry`, {}, getAuthHeader());
 
+// Re-run the automated test that produced an issue.
+export const rerunIssueTest = (testCaseId) =>
+  axios.post(`${API_URL}/run/${testCaseId}/async`, {}, getAuthHeader());
+
 // ---- Manual (tracked) test run ----
 // Opens a headed browser at the project URL; captures a screenshot on every
 // page navigation so the user's manual walkthrough leaves auditable evidence.
