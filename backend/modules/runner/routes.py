@@ -2685,6 +2685,46 @@ def _previous_run_findings(testcase_id):
     return findings, row.get('health_score')
 
 
+def build_flaky_summary(statuses):
+    """Classify inconsistent recent outcomes without calling deterministic failures flaky."""
+    clean = [status for status in statuses if status in ('Pass', 'Fail')]
+    if len(clean) < 4 or len(set(clean)) < 2:
+        return {
+            'is_flaky': False,
+            'sample_size': len(clean),
+            'pass_count': clean.count('Pass'),
+            'fail_count': clean.count('Fail'),
+            'pass_rate': round(clean.count('Pass') / len(clean) * 100) if clean else None,
+        }
+    return {
+        'is_flaky': True,
+        'sample_size': len(clean),
+        'pass_count': clean.count('Pass'),
+        'fail_count': clean.count('Fail'),
+        'pass_rate': round(clean.count('Pass') / len(clean) * 100),
+        'summary': f"Outcome changed across {len(clean)} recent runs "
+                   f"({clean.count('Pass')} passed, {clean.count('Fail')} failed).",
+    }
+
+
+def _recent_flaky_summary(testcase_id, current_status):
+    """Load a small status history so reports can flag unstable tests."""
+    try:
+        cursor = mysql.connection.cursor()
+        cursor.execute(
+            """SELECT status FROM test_runs
+               WHERE test_case_id = %s AND status IN ('Pass', 'Fail')
+               ORDER BY id DESC LIMIT 9""",
+            (testcase_id,),
+        )
+        statuses = [row.get('status') for row in cursor.fetchall()]
+        cursor.close()
+        return build_flaky_summary([current_status] + statuses)
+    except Exception as e:
+        logger.warning("could not calculate flaky status: %s", e)
+        return build_flaky_summary([current_status])
+
+
 def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
     """
     Execute an automated crawl and persist the results.
@@ -3228,6 +3268,7 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
             # was captured so far as 'Cancelled' and leaves the test case's
             # status alone, instead of stamping Pass/Fail on a partial audit.
             status = 'Cancelled' if was_cancelled else ('Pass' if issues_found == 0 else 'Fail')
+            regression['flaky'] = _recent_flaky_summary(testcase_id, status)
             # A Pass on a partial audit is not a full all-clear. We keep the
             # Pass/Fail meaning simple and let coverage_summary['notes'] carry
             # the caveat about anything that was capped or skipped.

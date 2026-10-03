@@ -61,6 +61,15 @@ const parsePageFindings = (jsonStr) => {
   }
 };
 
+const ASSERTION_TEMPLATES = [
+  'Expect text Welcome',
+  'Expect element Submit to be visible',
+  'Expect url contains /dashboard',
+  'Expect 1 elements matching .result',
+  'Expect Submit attribute disabled to equal false',
+  'Expect local storage token to exist',
+];
+
 // Category metadata for combined issue lists / per-page sections
 const CATEGORY_META = {
   broken_links: { Icon: Link2, label: 'Broken Links', tone: 'text-red-300 bg-red-500/15' },
@@ -189,6 +198,12 @@ const RegressionPanel = ({ regression }) => {
         <span>{regression.fixed_count} fixed</span>
         <span>{regression.still_open_count} still open</span>
       </div>
+      {regression.flaky?.is_flaky && (
+        <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
+          <strong>Possible flaky test:</strong> {regression.flaky.summary}
+          <span className="ml-2 text-amber-100/70">Pass rate {regression.flaky.pass_rate}%</span>
+        </div>
+      )}
     </div>
   );
 };
@@ -640,6 +655,10 @@ const TestCases = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const addAssertionTemplate = (template) => {
+    setSteps((current) => current.trim() ? `${current.trim()}\n${template}` : template);
   };
 
   // ===== Row actions =====
@@ -1462,6 +1481,22 @@ const TestCases = () => {
                     : 'Open /login\nClick Sign in\nExpect text Email is required'}
                   rows="6"
                   className={`${inputBase} font-mono text-sm ${steps && !isStepsValid ? 'border-red-500/60 focus:ring-red-500/50' : 'border-white/10 focus:ring-brand-sky/60'}`} />
+                {testType === 'automated' && (
+                  <div className="mt-2 rounded-lg border border-brand-sky/20 bg-brand-sky/5 p-2.5">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <span className="text-xs font-semibold text-brand-sky">Add a verification</span>
+                      <span className="text-[11px] text-slate-500">Assertions make automation prove the feature works</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {ASSERTION_TEMPLATES.map((template) => (
+                        <button key={template} type="button" onClick={() => addAssertionTemplate(template)}
+                          className="text-[11px] px-2 py-1 rounded-md border border-white/10 bg-white/5 text-slate-300 hover:text-white hover:border-brand-sky/50">
+                          + {template}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {testType === 'automated' ? (
                   <p className="text-xs text-slate-500 mt-1.5">
                     Leave this blank for an autonomous site audit. Add steps only when you want to test a specific user journey. Supported workflow actions:{' '}
@@ -1472,7 +1507,8 @@ const TestCases = () => {
                     <span className="text-slate-400 font-mono">Tick / Uncheck</span>,{' '}
                     <span className="text-slate-400 font-mono">Press</span>,{' '}
                     <span className="text-slate-400 font-mono">Wait for</span>,{' '}
-                    <span className="text-slate-400 font-mono">Expect text</span>,{' '}
+                    <span className="text-slate-400 font-mono">Expect text/element/count/attribute</span>,{' '}
+                    <span className="text-slate-400 font-mono">Expect local storage</span>,{' '}
                     <span className="text-slate-400 font-mono">Expect no X</span>,{' '}
                     <span className="text-slate-400 font-mono">Expect url contains / is</span>.
                     A step that fails is reported as a functional failure.

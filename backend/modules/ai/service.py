@@ -11,6 +11,7 @@ Functions:
 from flask import current_app
 import json
 import requests
+import time
 
 
 def _get_client():
@@ -26,28 +27,48 @@ def _get_model():
     return current_app.config.get('AI_MODEL', 'gemini-3.6-flash')
 
 
-def _generate(prompt, max_tokens, system=None):
+def _generate(prompt, max_tokens, system=None, response_mime_type=None):
     """Generate text from Gemini and return the first response candidate."""
     api_key = _get_client()
     payload = {
         'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
         'generationConfig': {'maxOutputTokens': max_tokens},
     }
+    if response_mime_type:
+        payload['generationConfig']['responseMimeType'] = response_mime_type
     if system:
         payload['systemInstruction'] = {'parts': [{'text': system}]}
 
-    response = requests.post(
-        f'https://generativelanguage.googleapis.com/v1beta/models/{_get_model()}:generateContent',
-        params={'key': api_key},
-        json=payload,
-        timeout=60,
-    )
-    response.raise_for_status()
+    model = _get_model()
+    response = None
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
+                params={'key': api_key},
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            break
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise Exception(f'Gemini request failed with HTTP {status_code or "unknown"}') from exc
+            time.sleep(2 ** attempt)
+
+    if response is None:
+        raise Exception('Gemini request failed without a response')
     data = response.json()
     try:
-        return ''.join(part.get('text', '') for part in data['candidates'][0]['content']['parts']).strip()
-    except (KeyError, IndexError, TypeError) as exc:
+        parts = data['candidates'][0]['content'].get('parts', [])
+        text = ''.join(part.get('text', '') for part in parts).strip()
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
         raise Exception('Gemini returned an empty response') from exc
+    if not text:
+        finish_reason = data.get('candidates', [{}])[0].get('finishReason', 'UNKNOWN')
+        raise Exception(f'Gemini returned an empty response ({finish_reason})')
+    return text
 
 
 # ============================================================
@@ -88,7 +109,7 @@ Respond in this EXACT JSON format (no markdown, just JSON):
 
 Important: Return ONLY valid JSON, no other text."""
 
-    raw = _generate(prompt, max_tokens=800)
+    raw = _generate(prompt, max_tokens=2048, response_mime_type='application/json')
 
     # Strip markdown fences if Claude added them
     if raw.startswith('```'):

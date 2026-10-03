@@ -29,7 +29,9 @@ def get_user_bug(user_id, bug_id):
     cursor = mysql.connection.cursor()
     cursor.execute(
         """SELECT b.id, b.title, b.description, b.severity, b.status, b.category,
-                  b.steps_to_reproduce, b.expected_behavior, b.actual_behavior
+                  b.steps_to_reproduce, b.expected_behavior, b.actual_behavior,
+                  b.severity_score, b.confidence, b.occurrences,
+                  b.root_cause, b.suggested_fix
            FROM bugs b
            LEFT JOIN test_cases tc ON b.test_case_id = tc.id
            LEFT JOIN projects p ON tc.project_id = p.id
@@ -71,13 +73,21 @@ def analyze_bug_endpoint(bug_id):
         return jsonify(analysis), 200
     except Exception as e:
         error_str = str(e).lower()
+        if 'not configured' in error_str:
+            return jsonify({'error': 'AI service unavailable: API key is not configured'}), 503
         if 'authentication' in error_str or 'invalid' in error_str and 'key' in error_str:
             return jsonify({'error': 'AI service unavailable: invalid API key'}), 503
+        if 'empty response' in error_str:
+            return jsonify({'error': 'AI service returned no explanation. Please try again.'}), 502
+        if 'http 429' in error_str:
+            return jsonify({'error': 'AI service is busy. Please try again in a moment.'}), 429
+        if any(f'http {status}' in error_str for status in (500, 502, 503, 504)):
+            return jsonify({'error': 'AI service is temporarily unavailable. Please try again in a moment.'}), 503
         if 'rate' in error_str and 'limit' in error_str:
             return jsonify({'error': 'AI service is busy, please try again in a moment'}), 429
         if 'credit' in error_str or 'balance' in error_str:
             return jsonify({'error': 'AI credits exhausted. Please contact admin.'}), 503
-        print(f"[AI analyze_bug error]: {e}")
+        print(f"[AI analyze_bug error]: {type(e).__name__}: {e}")
         return jsonify({'error': 'AI analysis failed. Please try again.'}), 500
 
 

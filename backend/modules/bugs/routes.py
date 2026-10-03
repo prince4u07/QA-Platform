@@ -12,6 +12,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 import json
 import logging
 import re
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -661,6 +662,34 @@ def _category_db_value(category):
     }.get(category, 'other')
 
 
+def _issue_fingerprint(category, finding):
+    """Create a stable key for grouping the same finding across runs."""
+    if not isinstance(finding, dict):
+        value = str(finding)
+    else:
+        value = '|'.join(str(finding.get(key) or '').strip().lower()
+                         for key in ('url', 'page_url', 'element_selector',
+                                     'element_text', 'issue', 'status_code'))
+    return hashlib.sha256(f'{category}|{value}'.encode('utf-8')).hexdigest()
+
+
+def _issue_quality(category, finding):
+    """Return a user-facing score, confidence, root cause and suggested fix."""
+    severity = _category_severity_map(category, finding)
+    score = {'Critical': 10, 'Major': 7, 'Minor': 3}.get(severity, 1)
+    confidence = 0.65
+    root_cause = ''
+    suggested_fix = ''
+    if isinstance(finding, dict):
+        if finding.get('status_code'):
+            confidence = 0.98
+        elif finding.get('element_selector') or finding.get('url'):
+            confidence = 0.9
+        root_cause = finding.get('root_cause') or finding.get('summary') or ''
+        suggested_fix = finding.get('fix') or ''
+    return score, confidence, root_cause, suggested_fix
+
+
 def _build_bug_from_finding(category, finding):
     """
     Build a bug record from a rich finding with plain-English title/description.
@@ -794,18 +823,27 @@ def _insert_finding_bug(cursor, title, description, severity, cat_db,
                         tc_id, run_id, finding, assigned_to=None):
     """Insert one bug built from a finding-shaped dict."""
     evidence = finding if isinstance(finding, dict) else None
+    category = next((key for key, value in RUN_FINDING_CATEGORIES.items()
+                     if _category_db_value(key) == cat_db), 'other')
+    quality = _issue_quality(category, finding)
+    fingerprint = _issue_fingerprint(category, finding)
     cursor.execute(
         """INSERT INTO bugs (
             title, description, severity, status, category,
             test_case_id, test_run_id,
             steps_to_reproduce, expected_behavior, actual_behavior,
-            evidence, assigned_to, created_at
-        ) VALUES (%s, %s, %s, 'Open', %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+            evidence, severity_score, confidence, fingerprint, occurrences,
+            first_seen_run_id, last_seen_run_id, root_cause, suggested_fix,
+            assigned_to, created_at
+        ) VALUES (%s, %s, %s, 'Open', %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, 1, %s, %s, %s, %s, %s, NOW())""",
         (title, description, severity, cat_db,
          tc_id, run_id,
          '', '',
          finding.get('issue', '') if isinstance(finding, dict) else str(finding),
-         json.dumps(evidence) if evidence else None, assigned_to)
+         json.dumps(evidence) if evidence else None,
+         quality[0], quality[1], fingerprint, run_id, run_id,
+         quality[2], quality[3], assigned_to)
     )
 
 
@@ -823,10 +861,15 @@ def create_bugs_from_run(run_id):
 
         # Get existing bug titles for this test case (de-dupe)
         cursor.execute(
-            "SELECT title FROM bugs WHERE test_case_id = %s",
+            "SELECT title, fingerprint, occurrences FROM bugs WHERE test_case_id = %s",
             (run['tc_id'],)
         )
-        existing_titles = {row['title'] for row in cursor.fetchall()}
+        existing_rows = cursor.fetchall()
+        existing_titles = {row['title'] for row in existing_rows}
+        existing_fingerprints = {
+            row['fingerprint']: row.get('occurrences') or 1
+            for row in existing_rows if row.get('fingerprint')
+        }
 
         # Use rich findings_evidence, falling back to legacy columns.
         rich_findings = _load_run_findings(run)
@@ -861,6 +904,16 @@ def create_bugs_from_run(run_id):
                         finding.get('severity'), 'Major')
                     cat_db = TESTER_CATEGORY_TO_DB.get(
                         finding.get('category'), 'other')
+                    fingerprint = _issue_fingerprint(
+                        finding.get('category') or 'other', finding)
+                    if fingerprint in existing_fingerprints:
+                        cursor.execute(
+                            """UPDATE bugs SET occurrences = occurrences + 1,
+                               last_seen_run_id = %s WHERE fingerprint = %s""",
+                            (run_id, fingerprint)
+                        )
+                        skipped += 1
+                        continue
                     note = finding.get('note') or ''
                     page_url = finding.get('page_url') or ''
                     description = (
@@ -872,6 +925,7 @@ def create_bugs_from_run(run_id):
                     _insert_finding_bug(cursor, title, description, severity,
                                         cat_db, run['tc_id'], run_id, finding,
                                         assigned_to=user_id)
+                    existing_fingerprints[fingerprint] = 1
                     created += 1
                 continue
 
@@ -884,11 +938,22 @@ def create_bugs_from_run(run_id):
                 try:
                     title, description, severity, cat_db, evidence, steps, expected, actual = \
                         _build_bug_from_finding(category, finding)
+                    fingerprint = _issue_fingerprint(category, finding)
 
+                    if fingerprint in existing_fingerprints:
+                        cursor.execute(
+                            """UPDATE bugs SET occurrences = occurrences + 1,
+                               last_seen_run_id = %s WHERE fingerprint = %s""",
+                            (run_id, fingerprint)
+                        )
+                        skipped += 1
+                        continue
                     if title in existing_titles:
                         skipped += 1
                         continue
                     existing_titles.add(title)
+                    existing_fingerprints[fingerprint] = 1
+                    quality = _issue_quality(category, finding)
 
                     evidence_json = json.dumps(evidence) if evidence else None
 
@@ -897,12 +962,16 @@ def create_bugs_from_run(run_id):
                             title, description, severity, status, category,
                             test_case_id, test_run_id,
                             steps_to_reproduce, expected_behavior, actual_behavior,
-                            evidence, assigned_to, created_at
-                        ) VALUES (%s, %s, %s, 'Open', %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+                            evidence, severity_score, confidence, fingerprint,
+                            occurrences, first_seen_run_id, last_seen_run_id,
+                            root_cause, suggested_fix, assigned_to, created_at
+                        ) VALUES (%s, %s, %s, 'Open', %s, %s, %s, %s, %s, %s, %s,
+                                  %s, %s, %s, 1, %s, %s, %s, %s, %s, NOW())""",
                         (title, description, severity, cat_db,
                          run['tc_id'], run_id,
                          steps, expected, actual,
-                         evidence_json, user_id)
+                         evidence_json, quality[0], quality[1], fingerprint,
+                         run_id, run_id, quality[2], quality[3], user_id)
                     )
                     created += 1
                 except Exception as e:

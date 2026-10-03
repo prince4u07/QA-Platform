@@ -53,16 +53,8 @@ const QUICK_ACTIONS = [
 const Dashboard = () => {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  const getUser = () => {
-    try {
-      return JSON.parse(localStorage.getItem('user') || '{}');
-    } catch {
-      return {};
-    }
-  };
-  const user = getUser();
-  const token = localStorage.getItem('token');
+  const { user: authUser, token, isAuthenticated } = useAuth();
+  const user = authUser || {};
 
   const [stats, setStats] = useState({
     projects: 0,
@@ -145,8 +137,6 @@ const Dashboard = () => {
   }, [token, runTypeFilter, severityFilter, statusFilter]);
 
   const v = (n) => (loading ? '—' : n);
-  const { isAuthenticated } = useAuth();
-
   return (
     <div className="relative flex h-screen overflow-hidden">
       <AmbientBackground />
