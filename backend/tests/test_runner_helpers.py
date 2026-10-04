@@ -14,6 +14,8 @@ from modules.runner.routes import (
     tag_findings_with_page,
     filter_console_errors,
     build_flaky_summary,
+    check_security,
+    check_generated_form_validation,
 )
 
 
@@ -316,3 +318,36 @@ def test_filter_console_errors_keeps_only_real_errors():
     out = filter_console_errors(msgs)
     assert len(out) == 1
     assert 'boom' in out[0]['text']
+
+
+def test_security_check_flags_mixed_content_on_https():
+    class _SecurityPage:
+        def evaluate(self, _script):
+            return ['http://cdn.example.test/app.js']
+
+        def query_selector_all(self, _selector):
+            return []
+
+    findings = check_security(
+        'https://example.test',
+        {'content-security-policy': "default-src 'self'",
+         'x-frame-options': 'DENY',
+         'strict-transport-security': 'max-age=31536000'},
+        _SecurityPage(),
+    )
+    assert any('insecure HTTP resource' in item['issue'] for item in findings)
+
+
+def test_generated_form_validation_reports_accepted_invalid_values():
+    class _FormPage:
+        def evaluate(self, _script):
+            return [{
+                'form_index': 0,
+                'name': 'email',
+                'type': 'email',
+                'value': 'not-an-email',
+            }]
+
+    findings = check_generated_form_validation(_FormPage())
+    assert findings[0]['field'] == 'email'
+    assert findings[0]['severity'] == 'serious'

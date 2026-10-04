@@ -597,7 +597,108 @@ def check_seo(page, page_url):
     return findings
 
 
-def check_security(page_url, response_headers):
+IMPORTANT_PAGE_KEYWORDS = {
+    'privacy': ('privacy', 'privacy-policy', 'privacy_policy'),
+    'terms': ('terms', 'terms-of-service', 'terms_and_conditions', 'conditions'),
+    'security': ('security', 'trust', 'responsible-disclosure'),
+    'contact': ('contact', 'support'),
+}
+
+
+def check_important_page_links(page, base_url):
+    """Verify important pages that the site exposes through navigation or footer links."""
+    findings = []
+    candidates = {}
+    try:
+        links = page.query_selector_all('a[href]')
+    except Exception as e:
+        logger.warning("important page check: link enumeration error: %s", e)
+        return findings
+
+    for link in links:
+        try:
+            href = resolve_link_url(link.get_attribute('href'), base_url)
+            if not href or urlparse(href).netloc != urlparse(base_url).netloc:
+                continue
+            label = ' '.join([
+                link.inner_text() or '',
+                link.get_attribute('aria-label') or '',
+                href,
+            ]).lower()
+            for page_type, keywords in IMPORTANT_PAGE_KEYWORDS.items():
+                if any(keyword in label for keyword in keywords):
+                    candidates.setdefault((page_type, href), link)
+        except Exception:
+            continue
+
+    for (page_type, href), link in candidates.items():
+        try:
+            response = requests.get(href, timeout=5, allow_redirects=True,
+                                    headers={'User-Agent': 'QA-Platform-audit/1.0'})
+            if response.status_code >= 400:
+                findings.append({
+                    'issue': f'Important {page_type} page is unavailable ({response.status_code})',
+                    'severity': 'serious' if page_type in ('privacy', 'terms', 'security') else 'moderate',
+                    'url': href,
+                    'page_type': page_type,
+                    'element_selector': 'a[href]',
+                    'display': f'{page_type.title()} page link returned HTTP {response.status_code}',
+                })
+            elif not response.text.strip():
+                findings.append({
+                    'issue': f'Important {page_type} page is empty',
+                    'severity': 'serious' if page_type in ('privacy', 'terms', 'security') else 'moderate',
+                    'url': href,
+                    'page_type': page_type,
+                    'element_selector': 'a[href]',
+                    'display': f'{page_type.title()} page returned no content',
+                })
+        except requests.RequestException as exc:
+            findings.append({
+                'issue': f'Important {page_type} page could not be reached',
+                'severity': 'moderate',
+                'url': href,
+                'page_type': page_type,
+                'element_selector': 'a[href]',
+                'display': f'{page_type.title()} page link is unreachable: {str(exc)[:120]}',
+            })
+    return findings
+
+
+def check_important_page_presence(base_url):
+    """Check conventional legal/security routes when the site exposes no link."""
+    findings = []
+    route_candidates = {
+        'privacy': ('/privacy', '/privacy-policy', '/privacy_policy'),
+        'terms': ('/terms', '/terms-and-conditions', '/terms_of_service'),
+        'security': ('/security', '/security-policy', '/trust'),
+    }
+    for page_type, routes in route_candidates.items():
+        reachable = False
+        for route in routes:
+            candidate = urljoin(base_url.rstrip('/') + '/', route.lstrip('/'))
+            try:
+                response = requests.get(
+                    candidate, timeout=3, allow_redirects=True,
+                    headers={'User-Agent': 'QA-Platform-audit/1.0'},
+                )
+                if response.status_code < 400 and response.text.strip():
+                    reachable = True
+                    break
+            except requests.RequestException:
+                continue
+        if not reachable:
+            findings.append({
+                'issue': f'No reachable {page_type} page was found',
+                'severity': 'moderate' if page_type == 'security' else 'serious',
+                'page_type': page_type,
+                'element_selector': 'document',
+                'display': f'No conventional {page_type} page route is available',
+            })
+    return findings
+
+
+def check_security(page_url, response_headers, page=None):
     findings = []
     try:
         is_https = page_url.startswith('https://')
@@ -633,6 +734,36 @@ def check_security(page_url, response_headers):
                 'missing_headers': missing,
                 'display': f'Missing {len(missing)} critical security headers',
             })
+        if page is not None:
+            try:
+                insecure_resources = page.evaluate(
+                    """() => Array.from(document.querySelectorAll(
+                        'img[src],script[src],link[href],iframe[src],video[src],audio[src]'
+                    )).map(el => el.src || el.href || '').filter(u => u.startsWith('http://'))"""
+                ) or []
+                if is_https and insecure_resources:
+                    findings.append({
+                        'issue': f'HTTPS page loads {len(insecure_resources)} insecure HTTP resource(s)',
+                        'severity': 'serious',
+                        'element_selector': '[src], [href]',
+                        'display': 'Mixed content can expose users to downgraded resources',
+                        'urls': insecure_resources[:10],
+                    })
+            except Exception as e:
+                logger.warning("mixed-content security check error: %s", e)
+            try:
+                password_fields = page.query_selector_all('input[type="password"]')
+                for field in password_fields:
+                    autocomplete = (field.get_attribute('autocomplete') or '').lower()
+                    if autocomplete == 'off':
+                        findings.append({
+                            'issue': 'Password field disables browser password-manager support',
+                            'severity': 'moderate',
+                            'element_selector': 'input[type="password"]',
+                            'display': 'Password input uses autocomplete="off"',
+                        })
+            except Exception as e:
+                logger.warning("password security check error: %s", e)
     except Exception as e:
         logger.warning("security check error: %s", e)
     return findings
@@ -1234,6 +1365,55 @@ def check_form_validation(page):
                 'fix': category_fix('validation_issues'),
             })
     return findings
+
+
+def check_generated_form_validation(page):
+    """Fill safe invalid values and verify that native constraints reject them."""
+    try:
+        results = page.evaluate("""() => {
+            const output = [];
+            for (const [formIndex, form] of Array.from(document.forms).entries()) {
+                for (const control of form.querySelectorAll('input, select, textarea')) {
+                    if (control.disabled || !control.willValidate) continue;
+                    const type = (control.type || 'text').toLowerCase();
+                    const values = type === 'email' ? ['not-an-email'] :
+                        type === 'url' ? ['not-a-url'] :
+                        type === 'tel' ? ['abc'] :
+                        type === 'number' && control.min !== '' ? [String(Number(control.min) - 1)] :
+                        type === 'number' && control.max !== '' ? [String(Number(control.max) + 1)] :
+                        control.pattern ? ['invalid-pattern-value'] :
+                        control.minLength > 0 ? ['x'.repeat(Math.max(0, control.minLength - 1))] :
+                        control.maxLength > 0 ? ['x'.repeat(control.maxLength + 1)] : [];
+                    for (const value of values) {
+                        const original = control.value;
+                        control.value = value;
+                        const accepted = control.checkValidity();
+                        control.value = original;
+                        if (accepted) {
+                            output.push({
+                                form_index: formIndex,
+                                name: control.name || control.id || control.type || 'field',
+                                type, value
+                            });
+                        }
+                    }
+                }
+            }
+            return output;
+        }""") or []
+    except Exception as e:
+        logger.warning("generated form validation check error: %s", e)
+        return []
+
+    return [{
+        'issue': f'Form accepts invalid {item["type"]} value in "{item["name"]}"',
+        'severity': 'serious',
+        'form_index': item['form_index'],
+        'field': item['name'],
+        'element_selector': 'input, select, textarea',
+        'display': f'Invalid value "{item["value"]}" was accepted for {item["name"]}',
+        'summary': 'Add client-side and server-side validation for this field.',
+    } for item in results]
 
 
 # ============================================================
@@ -1869,7 +2049,7 @@ def test_single_page(page, page_url, response_headers, console_messages,
     broken_links, link_coverage = check_broken_links(page, page_url)
     missing_alt = check_missing_alt(page)
     seo_issues = check_seo(page, page_url)
-    security_issues = check_security(page_url, response_headers)
+    security_issues = check_security(page_url, response_headers, page)
     accessibility_issues, a11y_engine = check_accessibility(page)
 
     if mobile_checked:
@@ -1885,7 +2065,19 @@ def test_single_page(page, page_url, response_headers, console_messages,
         api_issues = (api_issues or []) + check_api_quality(api_responses, page_url)
     except Exception as e:
         logger.warning("extended api check error: %s", e)
-    validation_issues = check_form_validation(page)
+    validation_issues = (
+        check_form_validation(page) +
+        check_generated_form_validation(page)
+    )
+    important_page_issues = check_important_page_links(page, page_url)
+    try:
+        if urlparse(page_url).path.rstrip('/') == '':
+            important_page_issues += check_important_page_presence(page_url)
+    except Exception as e:
+        logger.warning("important page presence check error: %s", e)
+    # Important-page availability is part of the SEO/site-completeness report
+    # so it is persisted and scored by the existing schema.
+    seo_issues = (seo_issues or []) + important_page_issues
     try:
         url_issues = check_url_health(page_url, page_status, response_headers)
     except Exception as e:
