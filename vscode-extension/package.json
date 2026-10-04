@@ -1,0 +1,148 @@
+{
+  "name": "qa-platform-local-qa",
+  "displayName": "QA Platform Local QA",
+  "description": "Analyze project source and test localhost applications with QA Platform.",
+  "version": "0.1.0",
+  "publisher": "qa-platform",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/prince4u07/QA-Platform.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Testing",
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "qa",
+    "testing",
+    "localhost",
+    "accessibility",
+    "security",
+    "playwright"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "qaPlatform.runQA",
+        "title": "QA Platform: Run QA"
+      },
+      {
+        "command": "qaPlatform.analyzeWorkspace",
+        "title": "QA Platform: Analyze Workspace"
+      },
+      {
+        "command": "qaPlatform.testLocalhost",
+        "title": "QA Platform: Test Localhost"
+      },
+      {
+        "command": "qaPlatform.runFullAudit",
+        "title": "QA Platform: Run Full Local Audit"
+      },
+      {
+        "command": "qaPlatform.runTests",
+        "title": "QA Platform: Run Existing Tests"
+      },
+      {
+        "command": "qaPlatform.runLoadTest",
+        "title": "QA Platform: Run Local Load Test (up to 250 users)"
+      },
+      {
+        "command": "qaPlatform.clearDiagnostics",
+        "title": "QA Platform: Clear Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "QA Platform",
+      "properties": {
+        "qaPlatform.localhostUrl": {
+          "type": "string",
+          "default": "http://localhost:5173",
+          "description": "Approved localhost URL used by the Test Localhost command."
+        },
+        "qaPlatform.maxFiles": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1,
+          "description": "Maximum number of source files scanned in one workspace analysis."
+        },
+        "qaPlatform.auditMaxPages": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Maximum pages visited by the local browser audit."
+        },
+        "qaPlatform.auditScreenshots": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture page screenshots as audit evidence."
+        },
+        "qaPlatform.importantPages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional localhost paths to audit even when not linked from the start page."
+        },
+        "qaPlatform.storageState": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Playwright storage-state JSON path relative to the workspace for authenticated audits."
+        },
+        "qaPlatform.loadTestUsers": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 250,
+          "description": "Default virtual users for the opt-in local load test."
+        },
+        "qaPlatform.loadTestDurationSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Load-test duration in seconds."
+        },
+        "qaPlatform.loadTestRampUpSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "description": "Time used to ramp virtual users up gradually."
+        },
+        "qaPlatform.loadTestPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["/"],
+          "description": "Local paths exercised by each virtual user."
+        },
+        "qaPlatform.loadTestMaxErrorRate": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "description": "Warning threshold for HTTP/network errors as a percentage."
+        },
+        "qaPlatform.loadTestMaxP95Ms": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 1,
+          "description": "Warning threshold for p95 response time."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check extension.js && node --check browser-audit.cjs && node --check load-tester.cjs",
+    "package": "npx --yes @vscode/vsce package"
+  },
+  "dependencies": {
+    "playwright": "^1.56.1",
+    "@axe-core/playwright": "^4.10.2"
+  }
+}

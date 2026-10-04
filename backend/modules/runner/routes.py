@@ -698,6 +698,66 @@ def check_important_page_presence(base_url):
     return findings
 
 
+AUTH_ROUTE_KEYWORDS = (
+    'account', 'admin', 'dashboard', 'profile', 'settings',
+    'billing', 'checkout', 'orders', 'user', 'private',
+)
+
+
+def check_authentication_access(page, page_url, session_used):
+    """Check discovered protected-looking routes without submitting anything."""
+    findings = []
+    if session_used and looks_like_login(page_url):
+        findings.append({
+            'issue': 'Captured authentication session redirected to a login page',
+            'severity': 'serious',
+            'url': page_url,
+            'element_selector': 'document',
+            'display': 'The saved login session may be expired or invalid',
+        })
+        return findings
+    if session_used:
+        return findings
+
+    try:
+        links = page.query_selector_all('a[href]')
+    except Exception as e:
+        logger.warning("authentication access check: link enumeration error: %s", e)
+        return findings
+
+    candidates = set()
+    for link in links:
+        try:
+            href = resolve_link_url(link.get_attribute('href'), page_url)
+            path = (urlparse(href).path or '').lower() if href else ''
+            if href and urlparse(href).netloc == urlparse(page_url).netloc:
+                if any(keyword in path.split('/') for keyword in AUTH_ROUTE_KEYWORDS):
+                    candidates.add(href)
+        except Exception:
+            continue
+
+    for href in sorted(candidates)[:10]:
+        try:
+            response = requests.get(
+                href, timeout=5, allow_redirects=True,
+                headers={'User-Agent': 'QA-Platform-anonymous-audit/1.0'},
+            )
+            if response.status_code < 400 and not looks_like_login(response.url):
+                findings.append({
+                    'issue': f'Protected-looking route is accessible without authentication: {urlparse(href).path}',
+                    'severity': 'critical',
+                    'url': href,
+                    'element_selector': 'a[href]',
+                    'display': 'Anonymous request reached a protected-looking page',
+                    'final_url': response.url,
+                    'status_code': response.status_code,
+                })
+        except requests.RequestException:
+            # A network failure is handled by the existing broken-link checks.
+            continue
+    return findings
+
+
 def check_security(page_url, response_headers, page=None):
     findings = []
     try:
@@ -2029,7 +2089,7 @@ def build_crawl_queue(base_url, landing_url=None, session_used=False):
 
 def test_single_page(page, page_url, response_headers, console_messages,
                      page_load_ms=0, api_responses=None, is_mobile=False,
-                     mobile_checked=None, page_status=0):
+                     mobile_checked=None, page_status=0, session_used=False):
     """
     Run every check against one loaded page.
 
@@ -2068,6 +2128,10 @@ def test_single_page(page, page_url, response_headers, console_messages,
     validation_issues = (
         check_form_validation(page) +
         check_generated_form_validation(page)
+    )
+    security_issues = (
+        security_issues +
+        check_authentication_access(page, page_url, session_used=session_used)
     )
     important_page_issues = check_important_page_links(page, page_url)
     try:
@@ -3293,7 +3357,8 @@ def _perform_run(testcase_id, tc, progress_cb=None, cancelled_check=None):
                         # Authenticated crawls run desktop (session validity
                         # depends on the desktop UA), where they would be noise.
                         mobile_checked=not session_used,
-                        page_status=page_status)
+                        page_status=page_status,
+                        session_used=session_used)
                     if page_idx == 0:
                         page_findings['functional_issues'] = step_findings
                         page_coverage['steps'] = step_summary

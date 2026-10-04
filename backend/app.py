@@ -1,3 +1,4 @@
+import os
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
@@ -42,6 +43,7 @@ from modules.ai.routes import ai_bp, init_ai
 from modules.reports.routes import reports_bp, init_reports
 from modules.otp.routes import otp_bp, init_otp
 from modules.admin.routes import admin_bp, init_admin
+from modules.plugin.routes import plugin_bp, init_plugin
 
 # Initialize modules with MySQL
 init_auth(mysql)
@@ -53,10 +55,11 @@ init_bugs(mysql)
 init_reports(mysql)
 init_otp(mysql)
 init_admin(mysql)
+init_plugin(mysql)
 
 # Background job runner for automated crawls (non-blocking /run/<id>/async).
 from modules.runner.jobs import job_manager
-job_manager.init(app, max_workers=2)
+job_manager.init(app, max_workers=app.config.get('RUNNER_WORKERS', 4))
 
 app.register_blueprint(auth_bp, url_prefix='/api/auth')
 app.register_blueprint(projects_bp, url_prefix='/api/projects')
@@ -67,6 +70,7 @@ app.register_blueprint(reports_bp, url_prefix='/api/reports')
 app.register_blueprint(ai_bp, url_prefix='/api/ai')
 app.register_blueprint(otp_bp, url_prefix='/api/otp')
 app.register_blueprint(admin_bp, url_prefix='/api/admin')
+app.register_blueprint(plugin_bp, url_prefix='/api/plugin')
 
 
 @jwt.token_in_blocklist_loader
@@ -135,4 +139,9 @@ def handle_rate_limit(error):
     }), 429
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(
+        debug=app.config.get('DEBUG', False),
+        host=os.getenv('FLASK_HOST', '127.0.0.1'),
+        port=int(os.getenv('FLASK_PORT', '5000')),
+        threaded=True
+    )

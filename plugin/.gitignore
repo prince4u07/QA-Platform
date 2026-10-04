@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.qa-platform/
+.qa-platform-analysis.json
+*.log

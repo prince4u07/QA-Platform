@@ -1,0 +1,24 @@
+﻿{
+    "name":  "@qa-platform/local-plugin",
+    "version":  "0.1.0",
+    "private":  true,
+    "description":  "Local project and localhost QA tools for existing AI assistants.",
+    "type":  "module",
+    "bin":  {
+                "qa-platform":  "./src/cli.js"
+            },
+    "scripts":  {
+                    "analyze":  "node src/cli.js analyze",
+                    "test-localhost":  "node src/cli.js test-localhost",
+                    "upload-results":  "node src/cli.js upload-results",
+                    "mcp":  "node src/cli.js mcp",
+                    "check":  "node --check src/cli.js \u0026\u0026 node --check src/mcp-server.js \u0026\u0026 node --check src/project-scanner.js \u0026\u0026 node --check src/localhost-tester.js \u0026\u0026 node --check src/browser-audit.js \u0026\u0026 node --check src/load-tester.js \u0026\u0026 node --check src/test-runner.js \u0026\u0026 node --check src/website-client.js"
+                },
+    "engines":  {
+                    "node":  "\u003e=18"
+                },
+    "dependencies":  {
+                         "playwright":  "^1.56.1",
+                         "@axe-core/playwright":  "^4.10.2"
+                     }
+}
