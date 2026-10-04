@@ -14,6 +14,9 @@ from modules.runner.routes import (
     tag_findings_with_page,
     filter_console_errors,
     build_flaky_summary,
+    check_security,
+    check_generated_form_validation,
+    check_authentication_access,
 )
 
 
@@ -316,3 +319,70 @@ def test_filter_console_errors_keeps_only_real_errors():
     out = filter_console_errors(msgs)
     assert len(out) == 1
     assert 'boom' in out[0]['text']
+
+
+def test_security_check_flags_mixed_content_on_https():
+    class _SecurityPage:
+        def evaluate(self, _script):
+            return ['http://cdn.example.test/app.js']
+
+        def query_selector_all(self, _selector):
+            return []
+
+    findings = check_security(
+        'https://example.test',
+        {'content-security-policy': "default-src 'self'",
+         'x-frame-options': 'DENY',
+         'strict-transport-security': 'max-age=31536000'},
+        _SecurityPage(),
+    )
+    assert any('insecure HTTP resource' in item['issue'] for item in findings)
+
+
+def test_generated_form_validation_reports_accepted_invalid_values():
+    class _FormPage:
+        def evaluate(self, _script):
+            return [{
+                'form_index': 0,
+                'name': 'email',
+                'type': 'email',
+                'value': 'not-an-email',
+            }]
+
+    findings = check_generated_form_validation(_FormPage())
+    assert findings[0]['field'] == 'email'
+    assert findings[0]['severity'] == 'serious'
+
+
+def test_anonymous_access_check_flags_protected_route(monkeypatch):
+    class _Link:
+        def get_attribute(self, name):
+            return 'https://site.test/admin'
+
+    class _Page:
+        def query_selector_all(self, _selector):
+            return [_Link()]
+
+    class _Response:
+        status_code = 200
+        url = 'https://site.test/admin'
+
+    monkeypatch.setattr(
+        'modules.runner.routes.requests.get',
+        lambda *args, **kwargs: _Response(),
+    )
+    findings = check_authentication_access(
+        _Page(), 'https://site.test/', session_used=False)
+    assert findings[0]['severity'] == 'critical'
+    assert 'without authentication' in findings[0]['issue']
+
+
+def test_captured_session_redirect_to_login_is_reported():
+    class _Page:
+        def query_selector_all(self, _selector):
+            return []
+
+    findings = check_authentication_access(
+        _Page(), 'https://site.test/login', session_used=True)
+    assert findings[0]['severity'] == 'serious'
+    assert 'redirected to a login page' in findings[0]['issue']

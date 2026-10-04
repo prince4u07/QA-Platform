@@ -31,6 +31,13 @@ QA Platform is a full-stack application for managing software quality workflows.
 - JWT authentication and admin controls
 - AI assistant powered by Google Gemini
 
+Automated audits also generate safe invalid values for supported form controls
+(empty required fields, invalid email/URL/phone values, patterns, and numeric or
+length limits). The runner restores the original values and never submits
+destructive actions automatically. It also verifies important pages exposed by
+the site, including privacy, terms, security, contact, and support links, and
+reports unavailable or empty destinations.
+
 ## How it works
 
 1. A user registers and signs in to receive a JWT access token.
@@ -40,6 +47,17 @@ QA Platform is a full-stack application for managing software quality workflows.
 5. Automated runs crawl pages, collect evidence, and store run results.
 6. Detected issues can be converted into tracked bugs and analyzed by AI.
 7. Dashboard and report views summarize project health, pass rates, trends, and recent runs.
+
+During an automated run, the Playwright runner crawls the configured pages,
+audits forms without making destructive submissions, checks security headers and
+mixed content, and verifies important-page links. Findings include the page or
+field involved, severity, evidence, and a suggested fix.
+
+Authentication checks also probe discovered protected-looking routes (such as
+admin, account, dashboard, and billing pages) with anonymous read-only requests.
+If an anonymous request reaches one of these pages, the run reports a possible
+authorization defect. Captured sessions that unexpectedly return to a login
+page are reported as expired or invalid sessions.
 
 Projects that require authentication can save a browser session after an interactive login. Session data may contain cookies and local storage, so it must be treated as sensitive runtime data.
 
@@ -68,7 +86,63 @@ Flask API (127.0.0.1:5000)
    `-- MySQL database
 ```
 
-The Flask application registers each feature as a blueprint under `/api`. JWT authentication protects user-specific operations. The runner can execute work asynchronously through an in-process job manager with two workers. Generated screenshots and uploads are served from the backend's `static` directory.
+The Flask application registers each feature as a blueprint under `/api`. JWT authentication protects user-specific operations. The runner can execute work asynchronously through an in-process job manager whose worker count is controlled by `RUNNER_WORKERS`. Generated screenshots and uploads are served from the backend's `static` directory.
+
+### Capacity testing
+
+The local plugin supports an explicit HTTP load test of up to 250 virtual
+users. This is a benchmark, not a guarantee of production capacity:
+
+```powershell
+cd plugin
+node src/cli.js load-test http://localhost:5000 --workspace .. --users 250 --duration 60 --ramp-up 30 --path / --confirm
+```
+
+For a deployment target of approximately 250 concurrent users on a Windows
+host, install the backend requirements and use the production WSGI entrypoint:
+
+```powershell
+cd backend
+pip install -r requirements.txt
+$env:FLASK_DEBUG = "0"
+$env:WEB_THREADS = "8"
+$env:WEB_CONNECTION_LIMIT = "500"
+python serve.py
+```
+
+For Linux deployments, use the hosting provider's production WSGI process
+manager instead of Flask's development server. Configure `WEB_WORKERS`,
+`WEB_THREADS`, and `RUNNER_WORKERS` for the host, and verify database
+connection limits, CPU, memory, and p95 latency during the load test. These
+settings are a starting point, not a guarantee that every deployment can
+support exactly 250 users. Do not run a 250-user test against a third-party
+host without written permission.
+
+### Local QA plugin
+
+The repository also contains an independent local plugin in [`plugin/`](C:/Users/princ/Downloads/qa-platform/qa-platform/plugin). It does not include an AI assistant. Instead, it exposes safe project scanning and localhost testing tools to the user's existing AI assistant through an MCP-compatible stdio server and a CLI.
+
+```powershell
+cd plugin
+npm.cmd run check
+node src/cli.js analyze ..
+node src/cli.js test-localhost http://localhost:5173 --workspace ..
+node src/cli.js mcp
+```
+
+The plugin keeps source analysis local by default, reports file/line findings in structured JSON, restricts browser checks to localhost addresses, and supports explicit result upload through `QA_PLATFORM_API_URL` and `QA_PLATFORM_TOKEN`.
+
+The plugin and Marketplace extension do not use `GEMINI_API_KEY`, OpenAI keys,
+or any AI-provider credential. They contain no AI client. Any external AI
+assistant calls the local plugin tools directly.
+
+Reviewed plugin results can optionally be stored by the authenticated
+`POST /api/plugin/analysis` endpoint. The endpoint stores structured findings
+only and does not receive source files or AI prompts.
+
+### VS Code Marketplace extension
+
+The publishable VS Code package is in [`vscode-extension/`](C:/Users/princ/Downloads/qa-platform/qa-platform/vscode-extension). It is separate from the website and does not include an AI assistant. It contributes workspace analysis, localhost testing, and Problems-panel diagnostics for Marketplace users. Replace the placeholder publisher ID in its `package.json` before packaging or publishing.
 
 ## Prerequisites
 

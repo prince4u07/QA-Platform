@@ -1,0 +1,25 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "maxPages": 20,
+  "screenshots": true,
+  "importantPages": [
+    "/login",
+    "/privacy",
+    "/terms"
+  ],
+  "ignoreRules": [],
+  "ignoreUrls": [],
+  "slowNavigationMs": 3000,
+  "slowResourceMs": 2000,
+  "apiMaxDurationMs": 3000,
+  "validateJson": true,
+  "storageState": "",
+  "loadTest": {
+    "users": 250,
+    "durationSeconds": 60,
+    "rampUpSeconds": 30,
+    "paths": ["/", "/api/health"],
+    "maxErrorRate": 2,
+    "maxP95Ms": 1000
+  }
+}
