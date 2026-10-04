@@ -16,6 +16,7 @@ from modules.runner.routes import (
     build_flaky_summary,
     check_security,
     check_generated_form_validation,
+    check_authentication_access,
 )
 
 
@@ -351,3 +352,37 @@ def test_generated_form_validation_reports_accepted_invalid_values():
     findings = check_generated_form_validation(_FormPage())
     assert findings[0]['field'] == 'email'
     assert findings[0]['severity'] == 'serious'
+
+
+def test_anonymous_access_check_flags_protected_route(monkeypatch):
+    class _Link:
+        def get_attribute(self, name):
+            return 'https://site.test/admin'
+
+    class _Page:
+        def query_selector_all(self, _selector):
+            return [_Link()]
+
+    class _Response:
+        status_code = 200
+        url = 'https://site.test/admin'
+
+    monkeypatch.setattr(
+        'modules.runner.routes.requests.get',
+        lambda *args, **kwargs: _Response(),
+    )
+    findings = check_authentication_access(
+        _Page(), 'https://site.test/', session_used=False)
+    assert findings[0]['severity'] == 'critical'
+    assert 'without authentication' in findings[0]['issue']
+
+
+def test_captured_session_redirect_to_login_is_reported():
+    class _Page:
+        def query_selector_all(self, _selector):
+            return []
+
+    findings = check_authentication_access(
+        _Page(), 'https://site.test/login', session_used=True)
+    assert findings[0]['severity'] == 'serious'
+    assert 'redirected to a login page' in findings[0]['issue']

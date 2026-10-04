@@ -34,4 +34,10 @@ class Config:
 
 
     # Flask
-    DEBUG = True
+    DEBUG = os.getenv('FLASK_DEBUG', '0').lower() in ('1', 'true', 'yes')
+    # Production servers should size web workers for the host, not the
+    # requested user count. These settings provide a safe baseline for a
+    # 250-concurrent-user target and remain configurable per deployment.
+    WEB_WORKERS = int(os.getenv('WEB_WORKERS', '4'))
+    WEB_THREADS = int(os.getenv('WEB_THREADS', '4'))
+    RUNNER_WORKERS = int(os.getenv('RUNNER_WORKERS', '4'))

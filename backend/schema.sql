@@ -53,6 +53,21 @@ CREATE TABLE IF NOT EXISTS users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- Reviewed structured results uploaded by the local QA plugin.
+CREATE TABLE IF NOT EXISTS plugin_analyses (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    user_id      INT NOT NULL,
+    analysis_id  VARCHAR(100) NOT NULL,
+    workspace    VARCHAR(500),
+    target_url   VARCHAR(500),
+    status       VARCHAR(30) NOT NULL,
+    payload      LONGTEXT NOT NULL,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_plugin_analyses_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- Login attempts, shown on the profile page as recent activity.
 CREATE TABLE IF NOT EXISTS login_history (
     id           INT AUTO_INCREMENT PRIMARY KEY,
