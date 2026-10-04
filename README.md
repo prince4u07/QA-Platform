@@ -31,6 +31,13 @@ QA Platform is a full-stack application for managing software quality workflows.
 - JWT authentication and admin controls
 - AI assistant powered by Google Gemini
 
+Automated audits also generate safe invalid values for supported form controls
+(empty required fields, invalid email/URL/phone values, patterns, and numeric or
+length limits). The runner restores the original values and never submits
+destructive actions automatically. It also verifies important pages exposed by
+the site, including privacy, terms, security, contact, and support links, and
+reports unavailable or empty destinations.
+
 ## How it works
 
 1. A user registers and signs in to receive a JWT access token.
@@ -40,6 +47,11 @@ QA Platform is a full-stack application for managing software quality workflows.
 5. Automated runs crawl pages, collect evidence, and store run results.
 6. Detected issues can be converted into tracked bugs and analyzed by AI.
 7. Dashboard and report views summarize project health, pass rates, trends, and recent runs.
+
+During an automated run, the Playwright runner crawls the configured pages,
+audits forms without making destructive submissions, checks security headers and
+mixed content, and verifies important-page links. Findings include the page or
+field involved, severity, evidence, and a suggested fix.
 
 Projects that require authentication can save a browser session after an interactive login. Session data may contain cookies and local storage, so it must be treated as sensitive runtime data.
 
